@@ -68,17 +68,6 @@ class PacketQueue:
         return not self._queue.empty()
 
 
-def no_loss(func, stream: PacketQueue):
-    @wraps(func)
-    def wrapper(self, *a, **kw) -> None:
-        orig_loss = stream.loss_probability
-        stream.loss_probability = 0
-        func(self, *a, **kw)
-        stream.loss_probability = orig_loss
-
-    return wrapper
-
-
 @attrs.define
 class Sender:
     """Go-Back-N sender
@@ -170,24 +159,6 @@ class Sender:
                 )
                 m_pos = left_bound
 
-    #     self.handle_eot()
-
-    # def handle_eot(self):
-    #     eot_packet = Packet(seq_num=EOT, payload="S")
-    #     # send eot_packets until EOT ACK is recieved
-    #     while True:
-    #         slog.debug("Sending EOT")
-    #         self.sender_to_reciever_ch.send(eot_packet)
-
-    #         if self.reciever_to_sender_ch:
-    #             packet = self.reciever_to_sender_ch.recieve()
-    #             if packet.seq_num == EOT:
-    #                 slog.debug("Got EOT ACK")
-    #                 break
-    #             else:
-    #                 slog.debug(f"Got some ACK {packet.seq_num}")
-    #         time.sleep(self.timeout)
-
 
 @attrs.define
 class Reciever:
@@ -238,37 +209,9 @@ class Reciever:
                 Packet(seq_num=expected_seq_num % (self.window_size + 1), payload="ACK")
             )
 
-        # self.handle_eot()
-
         rlog.debug(f"Recieved message: {message}")
         rlog.debug(f"{n_right = }")
         rlog.debug(f"{n_wrong = }")
-
-    # def handle_eot(self):
-    #     eot_packet = Packet(seq_num=EOT, payload="R")
-    #     resend = True
-    #     last_send_time = 0
-    #     while True:
-    #         if resend:
-    #             rlog.debug("Sending EOT ACK")
-    #             self.reciever_to_sender_ch.send(eot_packet)
-    #             resend = False
-    #             last_send_time = time.monotonic()
-
-    #         # we recieve? we send back!
-    #         # this means, the sender didn't get our EOT ACK
-    #         if self.sender_to_reciever_ch:
-    #             packet = self.sender_to_reciever_ch.recieve()
-    #             rlog.debug("Got EOT again")
-    #             if packet.seq_num == EOT:
-    #                 resend = True
-    #             else:
-    #                 rlog.debug(f"Expected EOT, got {packet.seq_num}")
-
-    #         # probably, the sender got the ACK for the EOT packet
-    #         if time.monotonic() - last_send_time > self.eot_disconnect_timeout:
-    #             rlog.debug("EOT timeout")
-    #             break
 
 
 def _handle_floats(
@@ -332,14 +275,6 @@ class HighNetProtocol:
         s_th.join()
         self._close_connection()
         r_th.join()
-        # threads = (
-        #     Thread(target=self.sender.run),
-        #     Thread(target=self.reciever.run),
-        # )
-        # for th in threads:
-        #     th.start()
-        # for th in threads:
-        #     th.join()
 
     def _close_connection(self):
         """Emulate no_loss closing connection with no ack from reciever."""
