@@ -238,6 +238,7 @@ class HighNetProtocol:
     sender: Sender = attrs.field(init=False)
     reciever: Reciever = attrs.field(init=False)
     log: logging.Logger = attrs.field(init=False)
+    transmission_time: float = attrs.field(init=False)
 
     def __attrs_post_init__(self):
         self.log = get_logger("H")
@@ -264,10 +265,12 @@ class HighNetProtocol:
         s_th = Thread(target=self.sender.run)
         r_th = Thread(target=self.reciever.run)
 
+        start_time = time.monotonic()
         s_th.start()
         r_th.start()
 
         s_th.join()
+        self.transmission_time = time.monotonic() - start_time
         self._close_connection()
         r_th.join()
 
@@ -303,3 +306,7 @@ if __name__ == "__main__":
     )
 
     high_proto.start_transmission()
+
+    print(f"{high_proto.transmission_time = }")
+    print(f"{high_proto.sender.n_sent = }")
+    print(f"{high_proto.reciever.n_recieved = }")
