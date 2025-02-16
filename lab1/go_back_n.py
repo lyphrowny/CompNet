@@ -1,9 +1,11 @@
-import warnings
+from collections.abc import Iterable
+from typing import Literal
 import attrs
 import random
 import queue
 import time
 from threading import Thread
+from functools import wraps
 
 import logging
 
@@ -64,6 +66,17 @@ class PacketQueue:
 
     def __bool__(self) -> bool:
         return not self._queue.empty()
+
+
+def no_loss(func, stream: PacketQueue):
+    @wraps(func)
+    def wrapper(self, *a, **kw) -> None:
+        orig_loss = stream.loss_probability
+        stream.loss_probability = 0
+        func(self, *a, **kw)
+        stream.loss_probability = orig_loss
+
+    return wrapper
 
 
 @attrs.define
@@ -157,23 +170,23 @@ class Sender:
                 )
                 m_pos = left_bound
 
-        self.handle_eot()
+    #     self.handle_eot()
 
-    def handle_eot(self):
-        eot_packet = Packet(seq_num=EOT, payload="S")
-        # send eot_packets until EOT ACK is recieved
-        while True:
-            slog.debug("Sending EOT")
-            self.sender_to_reciever_ch.send(eot_packet)
+    # def handle_eot(self):
+    #     eot_packet = Packet(seq_num=EOT, payload="S")
+    #     # send eot_packets until EOT ACK is recieved
+    #     while True:
+    #         slog.debug("Sending EOT")
+    #         self.sender_to_reciever_ch.send(eot_packet)
 
-            if self.reciever_to_sender_ch:
-                packet = self.reciever_to_sender_ch.recieve()
-                if packet.seq_num == EOT:
-                    slog.debug("Got EOT ACK")
-                    break
-                else:
-                    slog.debug(f"Got some ACK {packet.seq_num}")
-            time.sleep(self.timeout)
+    #         if self.reciever_to_sender_ch:
+    #             packet = self.reciever_to_sender_ch.recieve()
+    #             if packet.seq_num == EOT:
+    #                 slog.debug("Got EOT ACK")
+    #                 break
+    #             else:
+    #                 slog.debug(f"Got some ACK {packet.seq_num}")
+    #         time.sleep(self.timeout)
 
 
 @attrs.define
@@ -225,84 +238,183 @@ class Reciever:
                 Packet(seq_num=expected_seq_num % (self.window_size + 1), payload="ACK")
             )
 
-        self.handle_eot()
+        # self.handle_eot()
 
         rlog.debug(f"Recieved message: {message}")
         rlog.debug(f"{n_right = }")
         rlog.debug(f"{n_wrong = }")
 
-    def handle_eot(self):
-        eot_packet = Packet(seq_num=EOT, payload="R")
-        resend = True
-        last_send_time = 0
-        while True:
-            if resend:
-                rlog.debug("Sending EOT ACK")
-                self.reciever_to_sender_ch.send(eot_packet)
-                resend = False
-                last_send_time = time.monotonic()
+    # def handle_eot(self):
+    #     eot_packet = Packet(seq_num=EOT, payload="R")
+    #     resend = True
+    #     last_send_time = 0
+    #     while True:
+    #         if resend:
+    #             rlog.debug("Sending EOT ACK")
+    #             self.reciever_to_sender_ch.send(eot_packet)
+    #             resend = False
+    #             last_send_time = time.monotonic()
 
-            # we recieve? we send back!
-            # this means, the sender didn't get our EOT ACK
-            if self.sender_to_reciever_ch:
-                packet = self.sender_to_reciever_ch.recieve()
-                rlog.debug("Got EOT again")
-                if packet.seq_num == EOT:
-                    resend = True
-                else:
-                    rlog.debug(f"Expected EOT, got {packet.seq_num}")
+    #         # we recieve? we send back!
+    #         # this means, the sender didn't get our EOT ACK
+    #         if self.sender_to_reciever_ch:
+    #             packet = self.sender_to_reciever_ch.recieve()
+    #             rlog.debug("Got EOT again")
+    #             if packet.seq_num == EOT:
+    #                 resend = True
+    #             else:
+    #                 rlog.debug(f"Expected EOT, got {packet.seq_num}")
 
-            # probably, the sender got the ACK for the EOT packet
-            if time.monotonic() - last_send_time > self.eot_disconnect_timeout:
-                rlog.debug("EOT timeout")
-                break
+    #         # probably, the sender got the ACK for the EOT packet
+    #         if time.monotonic() - last_send_time > self.eot_disconnect_timeout:
+    #             rlog.debug("EOT timeout")
+    #             break
+
+
+def _handle_floats(
+    float_or_tuple: float | tuple[float, float],
+) -> tuple[float, float]:
+    if not isinstance(float_or_tuple, Iterable):
+        return float_or_tuple, float_or_tuple
+    return float_or_tuple
+
+
+def config_streams(
+    loss_probability: float | tuple[float, float],
+    latency: float | tuple[float, float],
+) -> tuple[PacketQueue, PacketQueue]:
+    s_loss_p, r_loss_p = _handle_floats(loss_probability)
+    s_latency, r_latency = _handle_floats(latency)
+
+    return PacketQueue(s_loss_p, s_latency), PacketQueue(r_loss_p, r_latency)
+
+
+@attrs.define
+class HighNetProtocol:
+    low_proto: Literal["GBN", "SR"]
+    window_size: int
+    message: str
+    reciever_timeout: float
+    s_to_r_stream: PacketQueue
+    r_to_s_stream: PacketQueue
+    sender: Sender = attrs.field(init=False)
+    reciever: Reciever = attrs.field(init=False)
+    log: logging.Logger = attrs.field(init=False)
+
+    def __attrs_post_init__(self):
+        self.log = get_logger("H")
+        match self.low_proto:
+            case "GBN":
+                sender_cls = Sender
+                reciever_cls = Reciever
+            case _:
+                raise ValueError(f"No low proto named {self.low_proto} is imlemented!")
+        self.sender = sender_cls(
+            sender_to_reciever_ch=self.s_to_r_stream,
+            reciever_to_sender_ch=self.r_to_s_stream,
+            message=self.message,
+            window_size=self.window_size,
+            timeout=self.reciever_timeout,
+        )
+        self.reciever = reciever_cls(
+            sender_to_reciever_ch=self.s_to_r_stream,
+            reciever_to_sender_ch=self.r_to_s_stream,
+            window_size=self.window_size,
+        )
+
+    def start_transmission(self):
+        s_th = Thread(target=self.sender.run)
+        r_th = Thread(target=self.reciever.run)
+
+        s_th.start()
+        r_th.start()
+
+        s_th.join()
+        self._close_connection()
+        r_th.join()
+        # threads = (
+        #     Thread(target=self.sender.run),
+        #     Thread(target=self.reciever.run),
+        # )
+        # for th in threads:
+        #     th.start()
+        # for th in threads:
+        #     th.join()
+
+    def _close_connection(self):
+        """Emulate no_loss closing connection with no ack from reciever."""
+        self.log.debug("Closing connection!")
+        orig_loss = self.s_to_r_stream.loss_probability
+        self.s_to_r_stream.loss_probability = 0
+        self.s_to_r_stream.send(Packet(seq_num=EOT, payload="S"))
+        self.s_to_r_stream.loss_probability = orig_loss
+        self.log.debug("Connection closed!")
 
 
 if __name__ == "__main__":
-    latency = 0.05
-    loss_probability = 0.2
-    window_size = 3
-    # a channel from sender to reciever: sender puts, reciever gets
-    sender_to_reciever_ch = PacketQueue(
-        loss_probability=loss_probability,
-        latency=latency,
-    )
-    # a channel from reciever to sender: reciever puts, sender gets
-    reciever_to_sender_ch = PacketQueue(
-        loss_probability=0.3,
-        latency=latency,
+    s_to_r_stream, r_to_s_stream = config_streams(
+        loss_probability=(0.2, 0.3),
+        latency=0.05,
     )
 
     from string import ascii_lowercase
 
     msg = ascii_lowercase[:5]
-    sender = Sender(
-        sender_to_reciever_ch,
-        reciever_to_sender_ch,
+    high_proto = HighNetProtocol(
+        low_proto="GBN",
+        window_size=3,
         message=msg,
-        window_size=window_size,
-    )
-    reciever = Reciever(
-        sender_to_reciever_ch,
-        reciever_to_sender_ch,
-        window_size=window_size,
+        reciever_timeout=1,
+        s_to_r_stream=s_to_r_stream,
+        r_to_s_stream=r_to_s_stream,
     )
 
-    # threads = [Thread(target=sender.run), Thread(target=reciever.run)]
+    high_proto.start_transmission()
 
-    # for th in threads:
-    #     th.start()
-    # for th in threads:
-    #     th.join()
+    # latency = 0.05
+    # loss_probability = 0.2
+    # window_size = 3
+    # # a channel from sender to reciever: sender puts, reciever gets
+    # sender_to_reciever_ch = PacketQueue(
+    #     loss_probability=loss_probability,
+    #     latency=latency,
+    # )
+    # # a channel from reciever to sender: reciever puts, sender gets
+    # reciever_to_sender_ch = PacketQueue(
+    #     loss_probability=0.3,
+    #     latency=latency,
+    # )
 
-    th_s = Thread(target=sender.run)
-    th_r = Thread(target=reciever.run)
+    # from string import ascii_lowercase
 
-    th_s.start()
-    th_r.start()
+    # msg = ascii_lowercase[:5]
+    # sender = Sender(
+    #     sender_to_reciever_ch,
+    #     reciever_to_sender_ch,
+    #     message=msg,
+    #     window_size=window_size,
+    # )
+    # reciever = Reciever(
+    #     sender_to_reciever_ch,
+    #     reciever_to_sender_ch,
+    #     window_size=window_size,
+    # )
 
-    th_s.join()
-    th_r.join()
+    # # threads = [Thread(target=sender.run), Thread(target=reciever.run)]
 
-    print(f"{sender.n_sent = }")
-    print(f"{reciever.n_recieved = }")
+    # # for th in threads:
+    # #     th.start()
+    # # for th in threads:
+    # #     th.join()
+
+    # th_s = Thread(target=sender.run)
+    # th_r = Thread(target=reciever.run)
+
+    # th_s.start()
+    # th_r.start()
+
+    # th_s.join()
+    # th_r.join()
+
+    # print(f"{sender.n_sent = }")
+    # print(f"{reciever.n_recieved = }")
