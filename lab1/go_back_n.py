@@ -112,23 +112,37 @@ class Sender:
             if self.reciever_to_sender_ch:
                 packet = self.reciever_to_sender_ch.recieve()
                 slog.debug(f"Recieved ACK for {packet.seq_num}")
+                slog.debug(
+                    f"Window before update {self.message[left_bound : left_bound + self.window_size]!r}"
+                )
                 if packet.seq_num != (
-                    expected_seq_num := left_bound % self.window_size
+                    expected_seq_num := (left_bound + 1) % (self.window_size + 1)
                 ):
-                    warnings.warn(
+                    slog.debug(
                         (
                             f"Recieved ACK {packet.seq_num} doesn't match "
                             f"the expected seq_num {expected_seq_num}"
-                        ),
-                        UserWarning,
+                        )
                     )
-                    m_pos = left_bound
+                    expected_seq_num = (left_bound) % (self.window_size + 1)
+                    diff = packet.seq_num - expected_seq_num
+                    if packet.seq_num < expected_seq_num:
+                        diff = (
+                            packet.seq_num + (self.window_size + 1) - expected_seq_num
+                        )
+                    left_bound += diff
+                    slog.debug(f"{m_pos = }, {self.message[m_pos : m_pos + 1]!r}")
+                    # m_pos -= diff
+                    # m_pos = left_bound
                 else:
                     left_bound += 1
+                slog.debug(
+                    f"Window after update {self.message[left_bound : left_bound + self.window_size]!r}"
+                )
 
             if m_pos < min(left_bound + self.window_size, self.num_packets):
                 packet = Packet(
-                    seq_num=m_pos % self.window_size,
+                    seq_num=m_pos % (self.window_size + 1),
                     payload=self.message[m_pos],
                 )
                 slog.debug(f"Sent {packet}")
@@ -153,10 +167,12 @@ class Sender:
             self.sender_to_reciever_ch.send(eot_packet)
 
             if self.reciever_to_sender_ch:
-                slog.debug("Got EOT ACK")
                 packet = self.reciever_to_sender_ch.recieve()
                 if packet.seq_num == EOT:
+                    slog.debug("Got EOT ACK")
                     break
+                else:
+                    slog.debug(f"Got some ACK {packet.seq_num}")
             time.sleep(self.timeout)
 
 
@@ -171,7 +187,7 @@ class Reciever:
     reciever_to_sender_ch: PacketQueue
     window_size: int = 10
     n_recieved: int = 0
-    eot_disconnect_timeout: float = 1.0
+    eot_disconnect_timeout: float = 2.0
 
     def run(self):
         expected_seq_num = 0
@@ -193,23 +209,21 @@ class Reciever:
                 n_right += 1
                 rlog.debug(f"Recieved {packet}")
                 message += packet.payload
-                rlog.debug(f"Sent ACK for {expected_seq_num}")
-                self.reciever_to_sender_ch.send(
-                    Packet(seq_num=expected_seq_num, payload="")
+                rlog.debug(
+                    f"Sent ACK {expected_seq_num} Request {(expected_seq_num + 1) % (self.window_size + 1)}"
                 )
-                expected_seq_num = (expected_seq_num + 1) % self.window_size
+                expected_seq_num = (expected_seq_num + 1) % (self.window_size + 1)
+                # self.reciever_to_sender_ch.send(
+                #     Packet(seq_num=expected_seq_num, payload="")
+                # )
             else:
                 n_wrong += 1
                 rlog.debug(f"Ignoring {packet}: was expecting {expected_seq_num}")
-                rlog.debug(
-                    f"Sending prev ACK {(expected_seq_num - 1) % self.window_size}"
-                )
-                self.reciever_to_sender_ch.send(
-                    Packet(
-                        seq_num=(expected_seq_num - 1) % self.window_size,
-                        payload="",
-                    )
-                )
+                rlog.debug(f"Sending Request {expected_seq_num}")
+            rlog.debug(f"Current message {message!r}")
+            self.reciever_to_sender_ch.send(
+                Packet(seq_num=expected_seq_num % (self.window_size + 1), payload="ACK")
+            )
 
         self.handle_eot()
 
@@ -255,7 +269,7 @@ if __name__ == "__main__":
     )
     # a channel from reciever to sender: reciever puts, sender gets
     reciever_to_sender_ch = PacketQueue(
-        loss_probability=0.1,
+        loss_probability=0.3,
         latency=latency,
     )
 
