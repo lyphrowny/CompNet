@@ -160,7 +160,9 @@ class Sender:
 class Reciever:
     """Go-Back-N reciever
 
-    Recieve packets and send ACKs for recieved ones
+    Recieve packets and send ACKs for recieved ones.
+    The sent ACK tells the sender which seq_num packet
+    we're expecting, not the one we've successfully recieved
     """
 
     sender_to_reciever_ch: PacketQueue
