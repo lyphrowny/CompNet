@@ -1,15 +1,18 @@
-import attrs
-from collections.abc import Iterable
-from typing import Literal, Protocol
-import logging
-from .stream import PacketQueue, Packet, EOT
-from .utils import get_logger
-
-from .go_back_n import Sender as GBN_Sender, Reciever as GBN_Reciever
-from .selective_repeat import Sender as SR_Sender, Reciever as SR_Reciever
 import enum
-from threading import Thread
+import logging
 import time
+from collections.abc import Iterable
+from threading import Thread
+from typing import Protocol
+
+import attrs
+
+from .go_back_n import Reciever as GBN_Reciever
+from .go_back_n import Sender as GBN_Sender
+from .selective_repeat import Reciever as SR_Reciever
+from .selective_repeat import Sender as SR_Sender
+from .stream import EOT, Packet, PacketQueue
+from .utils import get_logger
 
 
 def _handle_floats(

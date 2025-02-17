@@ -1,4 +1,4 @@
-from .high_proto import config_streams, HighNetProtocol, LowProtoEnum
+from .high_proto import HighNetProtocol, LowProtoEnum, config_streams
 
 
 def main():
@@ -14,10 +14,10 @@ def main():
 
     msg = ascii_lowercase[:5]
     high_proto = HighNetProtocol(
-        low_proto=LowProtoEnum.GBN,
+        low_proto=LowProtoEnum.SR,
         window_size=3,
         message=msg,
-        reciever_timeout=1,
+        sender_timeout=3,
         s_to_r_stream=s_to_r_stream,
         r_to_s_stream=r_to_s_stream,
     )

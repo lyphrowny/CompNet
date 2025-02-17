@@ -1,12 +1,11 @@
 import logging
-from typing import Protocol
-import attrs
 import queue
-import time
 import random
+import time
+
+import attrs
 
 from .utils import get_logger
-
 
 # end of transmission seq_num
 EOT = -1

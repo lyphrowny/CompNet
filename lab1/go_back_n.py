@@ -1,12 +1,8 @@
-from collections.abc import Iterable
-from typing import Literal
-import attrs
-import random
-import queue
 import time
-from threading import Thread
 
-from .stream import PacketQueue, Packet, EOT
+import attrs
+
+from .stream import EOT, Packet, PacketQueue
 from .utils import get_logger
 
 rlog = get_logger("r")
