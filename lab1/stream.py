@@ -16,11 +16,7 @@ EOT = -1
 class Packet:
     seq_num: int
     payload: str
-    sent_at: int = attrs.field(
-        default=0,
-        # 123.456 sec but as int (123_456)
-        # repr=lambda t: f"{int(t // 1e6 % 1e6):_}",
-    )
+    sent_at: float = attrs.field(default=0.0)
 
 
 @attrs.define
