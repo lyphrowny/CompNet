@@ -1,12 +1,12 @@
-from collections.abc import MutableSequence
 import logging
-import attrs
-from collections import deque
 import time
+from collections import deque
+from collections.abc import MutableSequence
 
+import attrs
+
+from .stream import EOT, Packet, PacketQueue
 from .utils import get_logger
-
-from .stream import PacketQueue, Packet, EOT
 
 
 @attrs.define
@@ -22,18 +22,14 @@ class Sender:
     def run(self):
         left_bound = 0
         m_pos = 0
-        # seq_num = 0
         seq_mod = self.window_size * 2
-        # repeat_from = 0
-        # once deque is full and we append, leftmost element
-        # will be removed
-        # _buffer: deque[Packet] = deque(maxlen=self.window_size)
         _buffer: deque[Packet] = deque()
         num_packets = len(self.message)
 
         def fill_buffer(num_new_packets: int):
+            # don't know why others are file without nonlocal
+            # but m_pos not
             nonlocal m_pos
-            # nonlocal m_pos, seq_mod, num_packets
 
             # add either `num_new_packets` or what's left to transmit
             for _ in range(min(num_new_packets, num_packets - m_pos)):
@@ -46,19 +42,12 @@ class Sender:
                         # will be sent as if their timeout was exhausted
                         sent_at=-time.monotonic(),
                     )
-                    # if m_pos < num_packets
-                    # else None
                 )
                 m_pos += 1
-            # self.log.debug(
-            #     f"{len(_buffer) = }, {self.window_size = }, {num_packets - left_bound = }"
-            # )
-            # self.log.debug(f"{_buffer}")
 
             # shrink buffer so that it's either `window_size` or what's left to get ACK from
             while len(_buffer) > min(self.window_size, num_packets - left_bound):
                 _buffer.popleft()
-            # self.log.debug(f"{_buffer}")
 
         # init buffer
         fill_buffer(self.window_size)
@@ -75,27 +64,10 @@ class Sender:
                 # add new packets, remove ACKed packets
                 fill_buffer(diff)
                 self.log.debug(f"Refilled buffer {_buffer}")
-                # for _ in range(diff):
-                #     _buffer.append(
-                #         Packet(
-                #             seq_num=m_pos % seq_mod,
-                #             payload=self.message[m_pos],
-                #             # hack: this way all newly created messages
-                #             # will be sent as if their timeout was exhausted
-                #             sent_at=2 * time.monotonic_ns(),
-                #         )
-                #     )
-                #     m_pos += 1
 
             for packet in _buffer:
-                # self.log.debug(
-                #     f"{packet} will be sent in {int((packet.sent_at + self.timeout - time.monotonic_ns()) // 1e6 % 1e6):_}"
-                # )
                 # retransmit lost packets or transmit new packets for the 1st time
                 if packet.sent_at + self.timeout < time.monotonic():
-                    # self.log.debug(
-                    #     f"{packet}, {packet.sent_at = }, {self.timeout = }, {time.monotonic() = }"
-                    # )
                     self.n_sent += 1
                     packet.sent_at = time.monotonic()
                     self.log.debug(f"Sent packet {packet}")
@@ -142,7 +114,7 @@ class Reciever:
                 _buffer[packet.seq_num % b_mod] = packet
                 self.log.debug(f"Inserted new packet, after {_buffer}")
             else:
-                self.log.debug(f"Out of window packet, ignoring")
+                self.log.debug("Out of window packet, ignoring")
 
             self.log.debug(f"Sent ACK Request {expected_seq_num}")
             self.r_to_s_stream.send(
