@@ -19,96 +19,12 @@ class Result:
         self.k = self.n_recieved / self.n_sent
 
 
-# def vary_loss_probability():
-#     loss_probabilities = [lp / 10 for lp in range(10)]
-#     window_size = 3
-#     sender_timeout = 0.2
-#     latency = 0.03
-#     msg_len = 100
-#     msg = "".join(map(chr, range(2**14, 2**14 + msg_len)))
-
-#     results: MutableMapping[float, MutableMapping[str, Result]] = defaultdict(dict)
-#     for lp, proto in tqdm(
-#         product(loss_probabilities, LowProtoEnum),
-#         total=len(loss_probabilities) * len(LowProtoEnum),
-#     ):
-#         (
-#             s_to_r_stream,  # sender to reciever stream
-#             r_to_s_stream,  # reciever to sender stream
-#         ) = config_streams(
-#             loss_probability=lp,
-#             latency=latency,
-#         )
-#         high_proto = HighNetProtocol(
-#             low_proto=proto,
-#             window_size=window_size,
-#             message=msg,
-#             sender_timeout=sender_timeout,
-#             s_to_r_stream=s_to_r_stream,
-#             r_to_s_stream=r_to_s_stream,
-#         )
-#         high_proto.start_transmission()
-#         results[lp][proto.name] = Result(
-#             n_sent=high_proto.sender.n_sent,
-#             n_recieved=high_proto.reciever.n_recieved,
-#             time_taken=high_proto.transmission_time,
-#         )
-#         assert high_proto.reciever.recieved_message == msg, (
-#             f"Expected {msg}, got {high_proto.reciever.recieved_message}"
-#         )
-#     print(results)
-#     _form_table(results, "p")
-
-
-# def vary_window_size():
-#     # loss_probability = 0.3
-#     # window_sizes = range(2, 11)
-#     # sender_timeout = 0.2
-#     # latency = 0.03
-#     # msg_len = 100
-#     # msg = "".join(map(chr, range(2**14, 2**14 + msg_len)))
-
-#     # results: MutableMapping[float, MutableMapping[str, Result]] = defaultdict(dict)
-#     # for ws, proto in tqdm(
-#     #     product(window_sizes, LowProtoEnum),
-#     #     total=len(window_sizes) * len(LowProtoEnum),
-#     # ):
-#     #     (
-#     #         s_to_r_stream,  # sender to reciever stream
-#     #         r_to_s_stream,  # reciever to sender stream
-#     #     ) = config_streams(
-#     #         loss_probability=loss_probability,
-#     #         latency=latency,
-#     #     )
-#     #     high_proto = HighNetProtocol(
-#     #         low_proto=proto,
-#     #         window_size=ws,
-#     #         message=msg,
-#     #         sender_timeout=sender_timeout,
-#     #         s_to_r_stream=s_to_r_stream,
-#     #         r_to_s_stream=r_to_s_stream,
-#     #     )
-#     #     high_proto.start_transmission()
-#     #     results[ws][proto.name] = Result(
-#     #         n_sent=high_proto.sender.n_sent,
-#     #         n_recieved=high_proto.reciever.n_recieved,
-#     #         time_taken=high_proto.transmission_time,
-#     #     )
-#     #     assert high_proto.reciever.recieved_message == msg, (
-#     #         f"Expected {msg}, got {high_proto.reciever.recieved_message}"
-#     #     )
-#     # print(results)
-#     # _form_table(results, "window size")
-
-
 def _vary_param(
     varying_param: str,
     varying_ws: Iterable[int],
     varying_lp: Iterable[float],
     varying_len: int,
 ):
-    # loss_probability = 0.3
-    # window_sizes = range(2, 11)
     sender_timeout = 0.2
     latency = 0.03
     msg_len = 100
