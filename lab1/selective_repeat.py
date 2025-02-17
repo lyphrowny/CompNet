@@ -56,9 +56,11 @@ class Sender:
 
         while left_bound < num_packets:
             if self.r_to_s_stream:
-                packet = self.r_to_s_stream.recieve()
-                slog.debug(f"Recieved ACK Request {packet.seq_num}")
-                diff = (packet.seq_num - left_bound) % seq_mod
+                rpacket = self.r_to_s_stream.recieve()
+                slog.debug(
+                    f"Recieved ACK Request {rpacket.seq_num}, {rpacket.payload!r}, {rpacket}"
+                )
+                diff = (rpacket.seq_num - left_bound) % seq_mod
                 slog.debug(f"left_bound before {left_bound}, {diff = }")
                 left_bound += diff
                 slog.debug(f"left_bound after {left_bound}")
@@ -88,6 +90,9 @@ class Reciever:
         b_mod = self.window_size
         _buffer: MutableSequence[Packet | None] = [None] * b_mod
         expected_seq_num = 0
+        no_ack_sent = -1
+        no_ack_timeout = 0.2
+        no_ack_time_sent = time.monotonic()
 
         while True:
             # will block until there is something to recieve
@@ -116,12 +121,18 @@ class Reciever:
             else:
                 rlog.debug("Out of window packet, ignoring")
 
-            rlog.debug(f"Sent ACK Request {expected_seq_num}")
-            self.r_to_s_stream.send(
-                Packet(
-                    seq_num=expected_seq_num,
-                    payload="REQUEST",
+            if (
+                no_ack_sent != expected_seq_num
+                or no_ack_time_sent + no_ack_timeout < time.monotonic()
+            ):
+                no_ack_sent = expected_seq_num
+                no_ack_time_sent = time.monotonic()
+                rlog.debug(f"Sent ACK Request {expected_seq_num}")
+                self.r_to_s_stream.send(
+                    Packet(
+                        seq_num=expected_seq_num,
+                        payload=f"REQUEST {expected_seq_num}",
+                    )
                 )
-            )
 
         rlog.debug(f"{self.recieved_message = }")
