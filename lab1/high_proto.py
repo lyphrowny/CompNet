@@ -54,7 +54,7 @@ class HighNetProtocol:
     low_proto: LowProtoEnum
     window_size: int
     message: str
-    reciever_timeout: float
+    sender_timeout: float
     s_to_r_stream: PacketQueue
     r_to_s_stream: PacketQueue
     sender: SenderProto = attrs.field(init=False)
@@ -76,7 +76,7 @@ class HighNetProtocol:
             r_to_s_stream=self.r_to_s_stream,
             message=self.message,
             window_size=self.window_size,
-            timeout=self.reciever_timeout,
+            timeout=self.sender_timeout,
         )
         self.reciever = reciever_cls(
             s_to_r_stream=self.s_to_r_stream,
@@ -88,12 +88,12 @@ class HighNetProtocol:
         s_th = Thread(target=self.sender.run)
         r_th = Thread(target=self.reciever.run)
 
-        start_time = time.monotonic_ns()
+        start_time = time.monotonic()
         s_th.start()
         r_th.start()
 
         s_th.join()
-        self.transmission_time = time.monotonic_ns() - start_time
+        self.transmission_time = time.monotonic() - start_time
         self._close_connection()
         r_th.join()
 
