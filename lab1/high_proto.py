@@ -9,8 +9,10 @@ import attrs
 
 from .go_back_n import Reciever as GBN_Reciever
 from .go_back_n import Sender as GBN_Sender
-from .selective_repeat import Reciever as SR_Reciever
-from .selective_repeat import Sender as SR_Sender
+from .selective_repeat import Reciever as SRW_Reciever
+from .selective_repeat import Sender as SRW_Sender
+from .selective_repeat_non_wiki import Reciever as SRNW_Reciever
+from .selective_repeat_non_wiki import Sender as SRNW_Sender
 from .stream import EOT, Packet, PacketQueue
 from .utils import get_logger
 
@@ -44,12 +46,19 @@ class RecieverProto(Protocol):
     @property
     def n_recieved(self) -> int: ...
 
+    @property
+    def recieved_message(self) -> str: ...
+
     def run(self) -> None: ...
 
 
 class LowProtoEnum(enum.StrEnum):
     GBN = enum.auto()
-    SR = enum.auto()
+    SRW = enum.auto()
+    # SRNW = enum.auto()
+
+
+hlog = get_logger("h")
 
 
 @attrs.define
@@ -62,18 +71,19 @@ class HighNetProtocol:
     r_to_s_stream: PacketQueue
     sender: SenderProto = attrs.field(init=False)
     reciever: RecieverProto = attrs.field(init=False)
-    log: logging.Logger = attrs.field(init=False)
     transmission_time: float = attrs.field(init=False)
 
     def __attrs_post_init__(self):
-        self.log = get_logger("H")
         match self.low_proto:
             case LowProtoEnum.GBN:
                 sender_cls = GBN_Sender
                 reciever_cls = GBN_Reciever
-            case LowProtoEnum.SR:
-                sender_cls = SR_Sender
-                reciever_cls = SR_Reciever
+            case LowProtoEnum.SRW:
+                sender_cls = SRW_Sender
+                reciever_cls = SRW_Reciever
+            case LowProtoEnum.SRNW:
+                sender_cls = SRNW_Sender
+                reciever_cls = SRNW_Reciever
         self.sender = sender_cls(
             s_to_r_stream=self.s_to_r_stream,
             r_to_s_stream=self.r_to_s_stream,
@@ -102,9 +112,9 @@ class HighNetProtocol:
 
     def _close_connection(self):
         """Emulate no_loss closing connection with no ack from reciever."""
-        self.log.debug("Closing connection!")
+        hlog.debug("Closing connection!")
         orig_loss = self.s_to_r_stream.loss_probability
         self.s_to_r_stream.loss_probability = 0
         self.s_to_r_stream.send(Packet(seq_num=EOT, payload="S"))
         self.s_to_r_stream.loss_probability = orig_loss
-        self.log.debug("Connection closed!")
+        hlog.debug("Connection closed!")

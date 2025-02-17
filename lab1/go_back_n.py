@@ -101,7 +101,7 @@ class Sender:
 
             if time.monotonic_ns() - last_send_time > self.timeout:
                 slog.debug(
-                    f"Timed out, resending from {left_bound} ({self.message[left_bound]})"
+                    f"Timed out, resending from {left_bound} ({self.message[left_bound : left_bound + 1]})"
                 )
                 m_pos = left_bound
 
@@ -119,11 +119,11 @@ class Reciever:
     r_to_s_stream: PacketQueue
     window_size: int = 10
     n_recieved: int = attrs.field(init=False, default=0)
+    recieved_message: str = attrs.field(init=False, default="")
 
     def run(self):
         seq_mod = self.window_size + 1
         expected_seq_num = 0
-        message = ""
 
         n_right = 0
         n_wrong = 0
@@ -140,7 +140,7 @@ class Reciever:
             if packet.seq_num == expected_seq_num:
                 n_right += 1
                 rlog.debug(f"Recieved {packet}")
-                message += packet.payload
+                self.recieved_message += packet.payload
                 rlog.debug(
                     f"Sent ACK {expected_seq_num} Request {(expected_seq_num + 1) % seq_mod}"
                 )
@@ -149,11 +149,11 @@ class Reciever:
                 n_wrong += 1
                 rlog.debug(f"Ignoring {packet}: was expecting {expected_seq_num}")
                 rlog.debug(f"Sending Request {expected_seq_num}")
-            rlog.debug(f"Current message {message!r}")
+            rlog.debug(f"Current message {self.recieved_message!r}")
             self.r_to_s_stream.send(
                 Packet(seq_num=expected_seq_num % seq_mod, payload="ACK")
             )
 
-        rlog.debug(f"Recieved message: {message}")
+        rlog.debug(f"Recieved message: {self.recieved_message}")
         rlog.debug(f"{n_right = }")
         rlog.debug(f"{n_wrong = }")
