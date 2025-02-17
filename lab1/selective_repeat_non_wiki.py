@@ -57,7 +57,7 @@ class Sender:
                 # the ACK for base or any other packet was lost,
                 # but the reciever has the full window and now expects
                 # a new one
-                if diff == self.window_size:
+                if diff == self.window_size or diff + left_bound >= num_packets:
                     # mark all the packets as ACKed
                     for packet in _buffer:
                         packet.sent_at = 2 * time.monotonic()
