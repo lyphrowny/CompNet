@@ -33,7 +33,6 @@ class Sender:
 
             # add either `num_new_packets` or what's left to transmit
             for _ in range(min(num_new_packets, num_packets - m_pos)):
-                # for _ in range(num_new_packets):
                 _buffer.append(
                     Packet(
                         seq_num=m_pos % seq_mod,
