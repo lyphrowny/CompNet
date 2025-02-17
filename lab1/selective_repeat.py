@@ -3,14 +3,7 @@ import attrs
 from collections import deque
 import time
 
-from .go_back_n import PacketQueue
-
-
-@attrs.define
-class Packet:
-    seq_num: int
-    payload: str
-    sent_at: float
+from .stream import PacketQueue, Packet, EOT
 
 
 @attrs.define
@@ -116,7 +109,6 @@ class Reciever:
                 Packet(
                     seq_num=expected_seq_num,
                     payload="REQUEST",
-                    sent_at=0.0,
                 )
             )
 
