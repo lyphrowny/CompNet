@@ -25,9 +25,10 @@ class Result:
 def _form_table(
     results: Mapping[int | float, Mapping[str, Result]],
     test_param_name: str,
+    const_param: int | float,
 ):
     t_level = 1
-    t = lambda: "\t" * t_level
+    t = lambda: " " * 4 * t_level
     num_protos = len(LowProtoEnum)
     sl = "\\\\"
     env_begin = (
@@ -39,7 +40,7 @@ def _form_table(
     t_level = 2
     header1 = (
         rf"{t()}\hline",
-        rf"{t()}& {' & '.join(rf'\multicolumn{{2}}{{c|}}{proto.name}' for proto in LowProtoEnum)} {sl}",
+        rf"{t()}& {' & '.join(rf'\multicolumn{{2}}{{c|}}{{{proto.name}}}' for proto in LowProtoEnum)} {sl}",
         rf"{t()}\hline",
     )
     # text in math mode and escaping "_"
@@ -57,10 +58,18 @@ def _form_table(
         )
         formatted_results = map(lambda v: f"{v:.3f}", extracted_results)
         result_lines.append(f"{t()}{param} & {' & '.join(formatted_results)} {sl}")
+    result_lines.append(rf"{t()}\hline")
 
     t_level = 1
+    caption = f"Коэфф. эффективности и времени передачи от размера окна при $p = {const_param}$"
+    label = "ws"
+    if test_param_name == "p":
+        caption = f"Коэфф. эффективности и времени передачи от вероятности потери пакета при {timm('window_size')} = {const_param}"
+        label = "p"
     env_end = (
         rf"{t()}\end{{tabular}}",
+        rf"{t()}\caption{{{caption}}}",
+        rf"{t()}\label{{tab:kt_depend_{label}}}",
         r"\end{table}",
     )
 
@@ -140,6 +149,7 @@ def _vary_param(
             r_to_s_stream,  # reciever to sender stream
         ) = config_streams(
             loss_probability=(lp, 0),
+            # loss_probability=lp,
             latency=latency,
         )
         high_proto = HighNetProtocol(
@@ -160,7 +170,7 @@ def _vary_param(
             f"Expected {msg}, got {high_proto.reciever.recieved_message}"
         )
     print(results)
-    _form_table(results, varying_param)
+    _form_table(results, varying_param, const_param=(lp, ws)[not w_as_result_key])
     _plot(
         results,
         varying_param,
@@ -181,7 +191,8 @@ def _unset_debug_logging_level():
 def vary_window_size():
     _unset_debug_logging_level()
     # varying_ws = range(20, 41)
-    varying_ws = range(2, 4)
+    # varying_ws = range(2, 4)
+    varying_ws = range(2, 31)
     # varying_ws = range(10, 51, 5)
     # varying_ws = range(100, 1001, 100)
     varying_len = len(varying_ws)
@@ -198,7 +209,7 @@ def vary_window_size():
 
 def vary_loss_probability():
     _unset_debug_logging_level()
-    varying_len = 2
+    varying_len = 10
     varying_lp = (lp / 10 for lp in range(varying_len))
     varying_ws = repeat(3, varying_len)
     _ = _vary_param(
@@ -226,10 +237,10 @@ def main():
     from string import ascii_lowercase
 
     msg = ascii_lowercase[:5]
-    msg = string.printable[:30]
+    msg = string.printable[:9]
     high_proto = HighNetProtocol(
         low_proto=LowProtoEnum.GBN,
-        window_size=8,
+        window_size=3,
         message=msg,
         sender_timeout=0.5,
         s_to_r_stream=s_to_r_stream,
