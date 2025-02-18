@@ -7,13 +7,6 @@ from .utils import get_logger
 
 rlog = get_logger("r")
 slog = get_logger("s")
-# plog = get_logger("p")
-
-
-# @attrs.define
-# class Packet:
-#     seq_num: int
-#     payload: str
 
 
 @attrs.define
@@ -97,9 +90,9 @@ class Sender:
                 self.s_to_r_stream.send(packet)
                 m_pos += 1
                 self.n_sent += 1
-                last_send_time = time.monotonic_ns()
+                last_send_time = time.monotonic()
 
-            if time.monotonic_ns() - last_send_time > self.timeout:
+            if last_send_time + self.timeout < time.monotonic():
                 slog.debug(
                     f"Timed out, resending from {left_bound} ({self.message[left_bound : left_bound + 1]})"
                 )
@@ -150,9 +143,7 @@ class Reciever:
                 rlog.debug(f"Ignoring {packet}: was expecting {expected_seq_num}")
                 rlog.debug(f"Sending Request {expected_seq_num}")
             rlog.debug(f"Current message {self.recieved_message!r}")
-            self.r_to_s_stream.send(
-                Packet(seq_num=expected_seq_num % seq_mod, payload="ACK")
-            )
+            self.r_to_s_stream.send(Packet(seq_num=expected_seq_num, payload="ACK"))
 
         rlog.debug(f"Recieved message: {self.recieved_message}")
         rlog.debug(f"{n_right = }")
