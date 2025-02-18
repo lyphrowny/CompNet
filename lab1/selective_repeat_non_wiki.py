@@ -1,4 +1,3 @@
-import logging
 import time
 from collections import deque
 from collections.abc import MutableSequence

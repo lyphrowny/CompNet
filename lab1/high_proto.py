@@ -1,5 +1,4 @@
 import enum
-import logging
 import time
 from collections.abc import Iterable
 from threading import Thread
