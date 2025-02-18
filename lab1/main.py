@@ -24,6 +24,8 @@ def _vary_param(
     varying_ws: Iterable[int],
     varying_lp: Iterable[float],
     varying_len: int,
+    *,
+    w_as_result_key: bool,
 ):
     sender_timeout = 0.2
     latency = 0.03
@@ -56,7 +58,7 @@ def _vary_param(
             r_to_s_stream=r_to_s_stream,
         )
         high_proto.start_transmission()
-        results[ws][proto.name] = Result(
+        results[(lp, ws)[w_as_result_key]][proto.name] = Result(
             n_sent=high_proto.sender.n_sent,
             n_recieved=high_proto.reciever.n_recieved,
             time_taken=high_proto.transmission_time,
@@ -130,7 +132,13 @@ def vary_window_size():
     varying_ws = range(2, 11)
     varying_len = len(varying_ws)
     varying_lp = repeat(0.3, varying_len)
-    _vary_param("window_size", varying_ws, varying_lp, varying_len)
+    _vary_param(
+        "window_size",
+        varying_ws,
+        varying_lp,
+        varying_len,
+        w_as_result_key=True,
+    )
 
 
 def vary_loss_probability():
@@ -138,7 +146,13 @@ def vary_loss_probability():
     varying_len = 10
     varying_lp = (lp / 10 for lp in range(varying_len))
     varying_ws = repeat(3, varying_len)
-    _vary_param("window_size", varying_ws, varying_lp, varying_len)
+    _vary_param(
+        "p",
+        varying_ws,
+        varying_lp,
+        varying_len,
+        w_as_result_key=False,
+    )
 
 
 def main():
@@ -175,6 +189,7 @@ def main():
 if __name__ == "__main__":
     # main()
     # vary_window_size()
+    vary_loss_probability()
     res = {
         2: {
             "GBN": Result(
@@ -286,4 +301,4 @@ if __name__ == "__main__":
         },
     }
 
-    _form_table(res, "window_size")
+    # _form_table(res, "window_size")
