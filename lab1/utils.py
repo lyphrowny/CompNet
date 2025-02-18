@@ -1,8 +1,5 @@
 import logging
 
-# end of transmission seq_num
-EOT = -1
-
 log_level = logging.DEBUG
 
 
