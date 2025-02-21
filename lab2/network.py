@@ -5,7 +5,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from itertools import permutations
 from pathlib import Path
 from types import TracebackType
-from typing import Protocol, Self, TextIO
+from typing import MutableSequence, Protocol, Self, TextIO
 
 import attrs
 
@@ -98,16 +98,33 @@ type Graph = Mapping[Node, Dists]
 
 @attrs.define
 class Network:
-    graph: Graph
+    # pts: MutableSequence[Point]
+    nodes: MutableSequence[Node]
+    max_distance: float
+    graph: Graph = attrs.field(init=False)
 
-    @classmethod
-    def from_points(cls, points: Iterable[Point], max_distance: float):
-        nodes = [Node(idx, point) for idx, point in enumerate(points)]
+    def _make_graph(self, nodes: Iterable[Node], max_distance: float) -> Graph:
         graph: Graph = defaultdict(dict)
         for node, neighbor in permutations(nodes, 2):
             if (dist := Node.dist(node, neighbor)) <= max_distance:
                 graph[node][neighbor] = dist
-        return cls(graph)
+        return graph
+
+    def __attrs_post_init__(self):
+        self.graph = self._make_graph(self.nodes, self.max_distance)
+
+    @classmethod
+    def from_points(cls, points: Iterable[Point], max_distance: float):
+        nodes = [Node(idx, point) for idx, point in enumerate(points)]
+        return cls(nodes, max_distance)
+
+    @property
+    def pts(self) -> MutableSequence[Point]:
+        return [node.pos for node in self.nodes]
+
+    def remove_node(self, node_idx: int) -> None:
+        del self.nodes[node_idx]
+        self.graph = self._make_graph(self.nodes, self.max_distance)
 
     def ospf(self, printer: PrinterProto | None = None):
         with printer or Printer() as printer:

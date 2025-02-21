@@ -1,11 +1,11 @@
-from collections.abc import Iterable, Mapping, MutableSequence
 import enum
-from itertools import product
+import math
+from collections.abc import Mapping, MutableSequence
 from pathlib import Path
 
 import attrs
 from network import FilePrinter, Network, Point
-import math
+from plot import Plotter
 
 
 class NetworkType(enum.StrEnum):
@@ -31,8 +31,8 @@ def circular(
     ]
 
 
-def starlike(n_grid: int = 3) -> MutableSequence[Point]:
-    return [Point(i, j) for i, j in product(range(n_grid), repeat=2)]
+def starlike(r: float = 3) -> MutableSequence[Point]:
+    return [Point(0, 0), *circular(n_pts=5, r=r)]
 
 
 def generate_points(
@@ -53,27 +53,38 @@ class Analysis:
     net_type: NetworkType
     node_idx_to_remove: int
     max_distance: float
-    output_dir: Path = attrs.field(default=None)
+    output_res_dir: Path = attrs.field(default=None)
+    output_fig_dir: Path = attrs.field(default=None)
     pts: MutableSequence[Point] = attrs.field(init=False)
 
     def __attrs_post_init__(self):
-        if self.output_dir is None:
-            self.output_dir = Path(__file__).parent / "res"
-            self.output_dir.mkdir(exist_ok=True, parents=True)
+        def _make_dir(output_dir: Path | None, subdir_name: str) -> Path:
+            if output_dir is None:
+                output_dir = Path(__file__).parent / subdir_name
+                output_dir.mkdir(exist_ok=True, parents=True)
+            return output_dir
+
+        self.output_res_dir = _make_dir(self.output_res_dir, "res")
+        self.output_fig_dir = _make_dir(self.output_fig_dir, "fig")
         self.pts = generate_points(self.net_type)
+
+    def _ospf_and_plot(
+        self, net: Network, fname: str, save_points: bool = True
+    ) -> None:
+        net.ospf(FilePrinter(self.output_res_dir / fname))
+        plotted_points = Plotter().plot_points(net.pts)
+        if save_points:
+            plotted_points.save(self.output_fig_dir / f"{fname}_points")
+        plotted_points.plot_graph(net).save(self.output_fig_dir / f"{fname}_graph")
 
     def run(self):
         net = Network.from_points(self.pts, self.max_distance)
-        net.ospf(FilePrinter(self.output_dir / f"{self.net_type}"))
-        # net.ospf()
-        del self.pts[self.node_idx_to_remove]
-        net = Network.from_points(self.pts, self.max_distance)
-        # net.ospf()
-        net.ospf(
-            FilePrinter(
-                self.output_dir / f"{self.net_type}_wo_{self.node_idx_to_remove}"
-            )
-        )
+        fname = f"{self.net_type}"
+        self._ospf_and_plot(net, fname)
+
+        net.remove_node(self.node_idx_to_remove)
+        fname = f"{self.net_type}_wo_{self.node_idx_to_remove}"
+        self._ospf_and_plot(net, fname, save_points=False)
 
 
 def main():
@@ -90,8 +101,8 @@ def main():
         ),
         Analysis(
             NetworkType.S,
-            node_idx_to_remove=4,
-            max_distance=1.2,
+            node_idx_to_remove=0,
+            max_distance=3.1,
         ),
     ]
     for analysis in analyses:
