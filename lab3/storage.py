@@ -2,6 +2,7 @@ from collections.abc import Iterator, Mapping, MutableMapping
 import copy
 import enum
 from functools import wraps
+from itertools import batched
 from typing import NewType, cast, override, ClassVar
 import attrs
 
@@ -149,6 +150,29 @@ class Transmitter:
     def send(self, peer_uid: UID, packet: Packet):
         peer = self.peers[peer_uid]
         _send(peer.stream, packet)
+
+
+# end of stored data
+EOS = b"\0"
+
+
+@attrs.define
+class Storage:
+    stored_data: str = attrs.field(init=False)
+    _stored_iterator: batched[str] = attrs.field(init=False)
+    _batch_size: int = attrs.field(init=False, default=10)
+
+    def store(self, data: str):
+        """Store data until it has EOS, then init iterator."""
+        self.stored_data += data
+        if self.stored_data.endswith(str(EOS)):
+            self._stored_iterator = batched(self.stored_data, self._batch_size)
+
+    def give(self):
+        try:
+            return next(self._stored_iterator)
+        except StopIteration:
+            return EOS
 
 
 @attrs.define
