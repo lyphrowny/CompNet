@@ -23,12 +23,6 @@ class Point:
 class Node:
     idx: int
     pos: Point
-    # x: float
-    # y: float
-
-    # @classmethod
-    # def from_point(cls, point: "Point"):
-    #     return cls(point.x, point.y)
 
     def __repr__(self):
         return f"{self.idx}"
@@ -117,9 +111,6 @@ class Network:
 
     def ospf(self, printer: PrinterProto | None = None):
         with printer or Printer() as printer:
-            # if printer is None:
-            #     printer = Printer()
-            # with printer as _print:
             for node in self.graph:
                 _, paths = self.dijkstra(node)
                 print_path(node, paths, printer)
@@ -158,26 +149,3 @@ class Network:
                     paths[neighbor] = paths[current_node] + [neighbor]
 
         return shortest_paths, paths
-
-
-# Example Graph as an adjacency list (dictionary of dictionaries)
-# graph = {
-#     "A": {"B": 4, "C": 2},
-#     "B": {"A": 4, "C": 5, "D": 10},
-#     "C": {"A": 2, "B": 5, "D": 3},
-#     "D": {"B": 10, "C": 3, "E": 8},
-#     "E": {"D": 8},
-# }
-
-# start_node = "A"
-# shortest_paths = dijkstra(graph, start_node)
-
-# Output shortest paths
-# for node, distance in shortest_paths.items():
-#     print(f"Shortest distance from {start_node} to {node}: {distance}")
-
-# points = [Point(i, i) for i in range(5)]
-# points.remove(Point(2, 2))
-# n = Network.from_points(points, max_distance=1.5)
-# n.ospf(FilePrinter(Path("riri")))
-# n.ospf()
