@@ -5,7 +5,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from itertools import permutations
 from pathlib import Path
 from types import TracebackType
-from typing import MutableSequence, Protocol, Self, TextIO
+from typing import Protocol, Self, TextIO
 
 import attrs
 
@@ -98,7 +98,6 @@ type Graph = Mapping[Node, Dists]
 
 @attrs.define
 class Network:
-    # pts: MutableSequence[Point]
     nodes: MutableSequence[Node]
     max_distance: float
     graph: Graph = attrs.field(init=False)
@@ -117,10 +116,6 @@ class Network:
     def from_points(cls, points: Iterable[Point], max_distance: float):
         nodes = [Node(idx, point) for idx, point in enumerate(points)]
         return cls(nodes, max_distance)
-
-    @property
-    def pts(self) -> MutableSequence[Point]:
-        return [node.pos for node in self.nodes]
 
     def remove_node(self, node_idx: int) -> None:
         del self.nodes[node_idx]

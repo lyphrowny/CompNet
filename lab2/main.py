@@ -72,7 +72,7 @@ class Analysis:
         self, net: Network, fname: str, save_points: bool = True
     ) -> None:
         net.ospf(FilePrinter(self.output_res_dir / fname))
-        plotted_points = Plotter().plot_points(net.pts)
+        plotted_points = Plotter().plot_points(net.nodes)
         if save_points:
             plotted_points.save(self.output_fig_dir / f"{fname}_points")
         plotted_points.plot_graph(net).save(self.output_fig_dir / f"{fname}_graph")

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import attrs
 import matplotlib.pyplot as plt
-from network import Network, Point
+from network import Network, Node
 
 
 @attrs.define
@@ -16,13 +16,13 @@ class Plotter:
 
     def plot_points(
         self,
-        pts: Iterable[Point],
+        nodes: Iterable[Node],
     ):
-        xs = [pt.x for pt in pts]
-        ys = [pt.y for pt in pts]
+        xs = [node.pos.x for node in nodes]
+        ys = [node.pos.y for node in nodes]
         self.ax.scatter(xs, ys)
-        for i, p in enumerate(pts):
-            self.ax.text(p.x, p.y + 0.08, f"{i}")
+        for node in nodes:
+            self.ax.text(node.pos.x, node.pos.y + 0.08, f"{node.idx}")
         return self
 
     def plot_graph(
