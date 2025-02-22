@@ -6,7 +6,7 @@ import time
 
 import attrs
 
-from .stream import EOT, PacketQueue, Packet as LPacket
+from .stream import EOT, PacketQueue, Packet as LPacket, NIT
 from .utils import get_logger
 from .high_transfer import Packet, UID, Action
 
@@ -66,15 +66,26 @@ class Sender:
     left_bound: int = attrs.field(init=False)
     m_pos: int = attrs.field(init=False)
     last_send_time: float = attrs.field(init=False)
+    seq_num: int = attrs.field(init=False)
 
     def send_packet(self, high_packet: Packet):
         # if not self.done:
         #     breakpoint()
         assert self.done, (self, threading.get_ident())
+        slog.info(f"Gotta send {high_packet = }")
         # will have 100 chars in packet's payload
         self.message = list(map("".join, batched(f"{high_packet}\x00", 100)))
         self.num_packets = len(self.message)
+        orig_loss = self.s_to_r_stream.loss_probability
+        self.s_to_r_stream.loss_probability = 0
+        self.s_to_r_stream.send(LPacket(seq_num=NIT, payload="S"))
+        self.s_to_r_stream.loss_probability = orig_loss
         self._update_stream_vars()
+        slog.info(f"Updated stream vars")
+        slog.info(f"{self.message = }, {self.num_packets = }")
+        slog.info(
+            f"{self.m_pos = }, {self.left_bound = }, {self.window_size = }, {self.num_packets = }"
+        )
         self.done = False
 
     def send_termination_packet(self):
@@ -93,6 +104,7 @@ class Sender:
 
     def run(self):
         seq_mod = self.window_size + 1
+        self.seq_num = 0
         self._update_stream_vars()
         while not self.should_terminate:
             if self.r_to_s_stream:
@@ -111,6 +123,13 @@ class Sender:
                     f"Window after update {self.message[self.left_bound : self.left_bound + self.window_size]!r}"
                 )
 
+            # if self.message[0]:
+            #     slog.info(
+            #         (
+            #             f"{self.m_pos < min(self.left_bound + self.window_size, self.num_packets) = }\n{self.message}\n",
+            #             f"{self.m_pos = }, {self.left_bound = }, {self.window_size = }, {self.num_packets = }",
+            #         )
+            #     )
             if self.m_pos < min(self.left_bound + self.window_size, self.num_packets):
                 packet = LPacket(
                     seq_num=self.m_pos % seq_mod,
@@ -120,6 +139,7 @@ class Sender:
                 self.s_to_r_stream.send(packet)
                 self.m_pos += 1
                 self.n_sent += 1
+                # self.seq_num = (self.seq_num + 1) % seq_mod
                 last_send_time = time.monotonic()
 
             if self.last_send_time + self.timeout < time.monotonic():
@@ -170,10 +190,16 @@ class Receiver:
                 self.received_packets.put(Packet(Action.TERM, UID(""), ""))
                 break
 
+            if packet.seq_num == NIT:
+                expected_seq_num = 0
+                self.r_to_s_stream.send(
+                    LPacket(seq_num=expected_seq_num, payload="NIT ACK")
+                )
+
             self.n_recieved += 1
             if packet.seq_num == expected_seq_num:
                 n_right += 1
-                rlog.debug(f"Recieved {packet}")
+                rlog.info(f"Recieved {packet}")
                 self.received_payload += packet.payload
                 if self.received_payload.endswith("\x00"):
                     rlog.info("HERE")

@@ -9,6 +9,9 @@ from .utils import get_logger
 # end of transmission seq_num
 EOT = -1
 
+# new interaction
+NIT = -2
+
 
 @attrs.define
 class Packet:

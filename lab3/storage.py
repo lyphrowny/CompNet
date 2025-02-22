@@ -24,6 +24,10 @@ SStream = NewType("SStream", Stream)
 RStream = NewType("RStream", Stream)
 
 
+# end of stored data
+EOS = "\x00"
+
+
 @attrs.define
 class AddressMapper:
     """A global addr-to-stream hub."""
@@ -228,15 +232,29 @@ class Transmitter:
     def _give(self, packet: Packet):
         if packet.receiver_uid == self.uid:
             sender_uid = cast(UID, packet.payload[:4])
-            packet = Packet(
-                Action.STORE,
-                sender_uid,
-                self.storage.give(),
-            )
-            self.send(sender_uid, packet)
+            self._give_all(sender_uid)
+            # print(f"{self.uid!r} for me, sending back to {sender_uid!r}")
+            # packet = Packet(
+            #     Action.STORE,
+            #     sender_uid,
+            #     self.storage.give(),
+            # )
+            # self.send(sender_uid, packet)
         else:
+            print(f"{self.uid!r} not for me, relaying")
             packet = attrs.evolve(packet, payload=f"{self.uid}{packet.payload}")
             self._relay(packet)
+
+    def _give_all(self, send_to_uid: UID):
+        print(f"{self.uid!r} for me, sending back to {send_to_uid!r}")
+        while (data := self.storage.give()) != EOS:
+            packet = Packet(
+                Action.STORE,
+                send_to_uid,
+                data,
+            )
+            self.send(send_to_uid, packet)
+            time.sleep(1)
 
     # @if_for_me
     def _add_peer(self, packet: Packet):
@@ -268,15 +286,11 @@ class Transmitter:
         peer.send_packet(packet)
 
 
-# end of stored data
-EOS = str(b"\0")
-
-
 @attrs.define
 class Storage:
     stored_data: str = attrs.field(init=False, default="")
     _stored_iterator: Iterator[str] = attrs.field(init=False)
-    _batch_size: int = attrs.field(init=False, default=10)
+    _batch_size: int = attrs.field(init=False, default=2)
 
     def store(self, data: str) -> None:
         """Store data until it has EOS, then init iterator."""
@@ -284,6 +298,7 @@ class Storage:
         if self.stored_data.endswith(EOS):
             self._stored_iterator = batched(self.stored_data, self._batch_size)
         print(f"{self.stored_data = }")
+        # self._stored_iterator = batched("ABC\x00", self._batch_size)
 
     def give(self) -> str:
         try:
@@ -374,8 +389,10 @@ if __name__ == "__main__":
     th2 = Thread(target=t2.run)
     th1.start()
     th2.start()
-    t.send(p_uid, Packet(Action.STORE, p_uid, "Yo!"))
+    t.send(p_uid, Packet(Action.STORE, p_uid, "Yo!\x00"))
     time.sleep(1)
+    t.send(p_uid, Packet(Action.GIVE, p_uid, t_uid))
+    time.sleep(3)
     t._terminate(Packet(Action.TERM, t_uid, ""))
     t2._terminate(Packet(Action.TERM, p_uid, ""))
     th1.join()
