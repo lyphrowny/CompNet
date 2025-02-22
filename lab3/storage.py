@@ -203,7 +203,6 @@ class DesignatedStorage:
     stored_data: MutableMapping[int, str] = attrs.field(
         init=False, default=defaultdict(str)
     )
-    _stored_iterator: Iterator[str] = attrs.field(init=False)
 
     def store(self, data: str) -> None:
         """Store data until it has EOS, then init iterator."""
@@ -501,6 +500,17 @@ def distribute_data(
         )
 
 
+def assemble_data(conductor: Transmitter, uids: Iterable[UID]):
+    for uid in uids:
+        conductor._packet_queue.put(
+            Packet(
+                Action.GIVE,
+                receiver_uid=uid,
+                payload=f"{conductor.uid}",
+            )
+        )
+
+
 if __name__ == "__main__":
     import uuid
 
@@ -635,10 +645,15 @@ if __name__ == "__main__":
     # print("".join(st.values()))
     # quit()
 
+    assemble_data(t, uids)
+
+    # t._packet_queue.put(Packet(Action.GIVE, p_uid, payload=f"{c_uid}"))
+    # t._packet_queue.put(Packet(Action.GIVE, tp_uid, payload=f"{c_uid}"))
+
     # time.sleep(10)
-    t.send(p_uid, Packet(Action.GIVE, p_uid, c_uid))
-    # time.sleep(3)
-    t.send(tp_uid, Packet(Action.GIVE, tp_uid, c_uid))
+    # t.send(p_uid, Packet(Action.GIVE, p_uid, c_uid))
+    # # time.sleep(3)
+    # t.send(tp_uid, Packet(Action.GIVE, tp_uid, c_uid))
     while not len(t.storage.stored_data) == sum(map(len, distributed_data.values())):
         print()
         print()
