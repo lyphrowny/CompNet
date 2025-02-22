@@ -2,9 +2,9 @@ from collections import defaultdict
 import copy
 import difflib
 import enum
-from collections.abc import Iterable, Iterator, Mapping, MutableMapping
+from collections.abc import Collection, Iterable, Iterator, Mapping, MutableMapping
 from functools import wraps
-from itertools import batched, starmap
+from itertools import batched, pairwise, starmap
 import logging
 from pathlib import Path
 from queue import Queue
@@ -15,7 +15,7 @@ from typing import ClassVar, Literal, NewType, Self, Sequence, cast, override
 
 import attrs
 
-from .network import Network, NodeProto
+from .network import Network, NodeProto, Paths
 from .stream import PacketQueue as Stream
 from .go_back_n import Receiver, Sender
 from .high_transfer import UID, Action, Packet
@@ -160,7 +160,7 @@ def if_for_me(func):
 
 
 @attrs.frozen(order=True)
-class TransmitterNode:
+class TransmitterNode(NodeProto):
     uid: UID
     latency: float
 
@@ -175,8 +175,9 @@ class TransmitterNode:
 @attrs.define
 class Storage:
     stored_data: str = attrs.field(init=False, default="")
-    _stored_iterator: Iterator[str] = attrs.field(init=False)
+    _stored_iterator: Iterator[str] = attrs.field(init=False, default=None)
     _batch_size: int = attrs.field(init=False, default=14)
+    is_ready: bool = attrs.field(init=False, default=False)
 
     def store(self, data: str) -> None:
         """Store data until it has EOS, then init iterator."""
@@ -184,6 +185,7 @@ class Storage:
         if self.stored_data.endswith(EOS):
             self.stored_data = self.stored_data[:~0]
             self._stored_iterator = batched(self.stored_data, self._batch_size)
+            self.is_ready = True
         print(f"{self.stored_data = }")
         # self._stored_iterator = batched("ABC\x00", self._batch_size)
 
@@ -191,6 +193,7 @@ class Storage:
         try:
             return "".join(next(self._stored_iterator))
         except StopIteration:
+            self.is_ready = False
             return EOS
 
 
@@ -222,9 +225,10 @@ class Transmitter:
     def run(self):
         while not self._should_terminate:
             if not self._packet_queue.empty():
+                # breakpoint()
                 self._receive_and_act()
-        while not self._packet_queue.empty():
-            self._receive_and_act()
+        # while not self._packet_queue.empty():
+        #     self._receive_and_act()
 
     def _receive_and_act(self):
         packet = self._packet_queue.get()
@@ -282,6 +286,9 @@ class Transmitter:
     def _give(self, packet: Packet):
         if packet.receiver_uid == self.uid:
             sender_uid = cast(UID, packet.payload[:4])
+            if not self.storage.is_ready:
+                self._packet_queue.put(packet)
+                return
             self._give_all(sender_uid)
             # print(f"{self.uid!r} for me, sending back to {sender_uid!r}")
             # packet = Packet(
@@ -306,9 +313,10 @@ class Transmitter:
             self.send(send_to_uid, packet)
             # time.sleep(1)
 
-    # @if_for_me
+    @if_for_me
     def _add_peer(self, packet: Packet):
         # if packet.receiver_uid == self.uid:
+        print(f"{packet}")
         peer = Peer.from_payload(self.uid, packet.payload, self._packet_queue)
         peer.start()
         self.peers[peer.uid] = peer
@@ -395,6 +403,51 @@ def split_data(data: str, uids: Sequence[UID], chunk_len: int):
     return data_per_uid
 
 
+def make_uid():
+    return cast(UID, f"{uuid.uuid4()}".split("-")[1])
+
+
+def make_uids(num_uids: int):
+    return [make_uid() for _ in range(num_uids)]
+
+
+def make_tnodes(
+    uids: Iterable[UID],
+    latencies: Iterable[float],
+) -> Mapping[UID, TransmitterNode]:
+    tnodes = starmap(TransmitterNode, zip(uids, latencies))
+    return dict(zip(uids, tnodes))
+
+
+def make_transmiters(
+    shortest_paths: Paths,
+    designated_uid: UID,
+) -> Mapping[UID, Transmitter]:
+    transmitters = {designated_uid: Transmitter(designated_uid, DesignatedStorage())}
+    for tnode in shortest_paths.keys() - designated_uid:
+        transmitters[tnode.uid] = Transmitter(tnode.uid)
+        for peer1, peer2 in pairwise(shortest_paths[tnode]):
+            _add_connection(peer1.uid, peer2.uid)
+
+    return transmitters
+
+
+def befriend_peers(
+    shortest_paths: Paths,
+    transmitters: Mapping[UID, Transmitter],
+):
+    # def befriend_peers(shortest_paths: Paths, conductor: Transmitter):
+    for tnode, paths in shortest_paths.items():
+        for peer1, peer2 in pairwise(paths):
+            pkt1 = Packet(Action.ADD, receiver_uid=peer2.uid, payload=f"{peer1.uid}")
+            pkt2 = Packet(Action.ADD, receiver_uid=peer1.uid, payload=f"{peer2.uid}")
+            # hack: originally, transmitter doesn't have anything "listening" on
+            # receiver ports, so we can't just ``conductor._packet_queue.put(pkt)``
+            transmitters[peer1.uid]._add_peer(pkt2)
+            transmitters[peer2.uid]._add_peer(pkt1)
+            # conductor.send(paths[1].uid, pkt2)
+
+
 if __name__ == "__main__":
     import uuid
 
@@ -402,20 +455,20 @@ if __name__ == "__main__":
 
     _unset_debug_logging_level()
 
-    make_uid = lambda: cast(UID, f"{uuid.uuid4()}".split("-")[1])
-    t_uid = make_uid()
-    p_uid = make_uid()
-    tp_uid = make_uid()
+    num_nodes = 3
 
-    tnodes = dict(
-        zip(
-            (t_uid, p_uid, tp_uid),
-            starmap(TransmitterNode, zip((t_uid, p_uid, tp_uid), (0.1, 0.1, 0.1))),
-        )
-    )
-    net = Network.from_nodes(tnodes.values(), max_distance=0.2)
-    print(net.ospf(tnodes[t_uid]))
-    quit()
+    uids = make_uids(num_uids=num_nodes)
+    latencies = [0.5, 0.3, 0.5]
+    tnodes = make_tnodes(uids, latencies)
+    net = Network.from_nodes(list(tnodes.values()), max_distance=0.8)
+    shortest_paths = net.ospf(tnodes[uids[0]])
+    print(net)
+
+    transmitters = make_transmiters(shortest_paths, designated_uid=uids[0])
+    print(transmitters)
+    # quit()
+
+    t_uid, p_uid, tp_uid = uids
 
     t = Transmitter(t_uid, DesignatedStorage())
     t2 = Transmitter(p_uid)
@@ -455,6 +508,7 @@ if __name__ == "__main__":
     pkt2 = Packet(Action.ADD, receiver_uid=p_uid, payload=f"{t_uid}")
     pkt3 = Packet(Action.ADD, receiver_uid=t_uid, payload=f"{tp_uid}")
     pkt4 = Packet(Action.ADD, receiver_uid=tp_uid, payload=f"{t_uid}")
+
     t._add_peer(pkt)
     t2._add_peer(pkt2)
     t._add_peer(pkt3)
@@ -462,23 +516,37 @@ if __name__ == "__main__":
 
     for who_uid, datas_to_store in chunked_data.items():
         for data_to_store in datas_to_store:
-            t.send(
-                who_uid,
+            t._packet_queue.put(
                 Packet(
                     Action.STORE,
                     receiver_uid=who_uid,
                     payload=data_to_store,
                 ),
             )
+            # t.send(
+            #     who_uid,
+            #     Packet(
+            #         Action.STORE,
+            #         receiver_uid=who_uid,
+            #         payload=data_to_store,
+            #     ),
+            # )
     for who_uid in chunked_data:
-        t.send(
-            who_uid,
+        t._packet_queue.put(
             Packet(
                 Action.STORE,
                 receiver_uid=who_uid,
                 payload="\x00",
             ),
         )
+        # t.send(
+        #     who_uid,
+        #     Packet(
+        #         Action.STORE,
+        #         receiver_uid=who_uid,
+        #         payload="\x00",
+        #     ),
+        # )
 
     # t.send(p_uid, Packet(Action.STORE, p_uid, "0000Yo,\x00"))
     # t.send(tp_uid, Packet(Action.STORE, tp_uid, "0001bitch!\x00"))
@@ -493,11 +561,19 @@ if __name__ == "__main__":
     # print("".join(st.values()))
     # quit()
 
-    # time.sleep(1)
+    # time.sleep(10)
     t.send(p_uid, Packet(Action.GIVE, p_uid, t_uid))
     # time.sleep(3)
     t.send(tp_uid, Packet(Action.GIVE, tp_uid, t_uid))
-    while not len(t.storage.stored_data) != sum(map(len, chunked_data.values())):
+    while not len(t.storage.stored_data) == sum(map(len, chunked_data.values())):
+        print()
+        print()
+        print()
+        print(f"{len(t.storage.stored_data) = }")
+        print(f"{sum(map(len, chunked_data.values())) = }")
+        print()
+        print()
+        print()
         time.sleep(3)
     t._terminate(Packet(Action.TERM, t_uid, ""))
     t2._terminate(Packet(Action.TERM, p_uid, ""))
@@ -517,6 +593,7 @@ if __name__ == "__main__":
     print()
     print(f"{t.storage.stored_data = }")
     st_data = t.storage.stored_data
+    print(f"{sorted(st_data.items()) = }")
     res_data = "".join(d for k, d in sorted(st_data.items()))
-    assert res_data == data, difflib.unified_diff(res_data, data)
+    assert res_data == data, list(difflib.unified_diff(res_data, data))
     print(f"{res_data!r} YYYYYY")
