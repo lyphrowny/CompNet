@@ -411,14 +411,14 @@ if __name__ == "__main__":
     _add_connection(t_uid, p_uid)
     _add_connection(t_uid, tp_uid)
 
-    pkt = Packet(Action.ADD, receiver_uid=t_uid, payload=f"{p_uid}")
-    pkt2 = Packet(Action.ADD, receiver_uid=p_uid, payload=f"{t_uid}")
-    pkt3 = Packet(Action.ADD, receiver_uid=t_uid, payload=f"{tp_uid}")
-    pkt4 = Packet(Action.ADD, receiver_uid=tp_uid, payload=f"{t_uid}")
-    t._add_peer(pkt)
-    t2._add_peer(pkt2)
-    t._add_peer(pkt3)
-    t3._add_peer(pkt4)
+    # pkt = Packet(Action.ADD, receiver_uid=t_uid, payload=f"{p_uid}")
+    # pkt2 = Packet(Action.ADD, receiver_uid=p_uid, payload=f"{t_uid}")
+    # pkt3 = Packet(Action.ADD, receiver_uid=t_uid, payload=f"{tp_uid}")
+    # pkt4 = Packet(Action.ADD, receiver_uid=tp_uid, payload=f"{t_uid}")
+    # t._add_peer(pkt)
+    # t2._add_peer(pkt2)
+    # t._add_peer(pkt3)
+    # t3._add_peer(pkt4)
 
     from pprint import pprint
 
@@ -437,6 +437,15 @@ if __name__ == "__main__":
     th1.start()
     th2.start()
     th3.start()
+
+    pkt = Packet(Action.ADD, receiver_uid=t_uid, payload=f"{p_uid}")
+    pkt2 = Packet(Action.ADD, receiver_uid=p_uid, payload=f"{t_uid}")
+    pkt3 = Packet(Action.ADD, receiver_uid=t_uid, payload=f"{tp_uid}")
+    pkt4 = Packet(Action.ADD, receiver_uid=tp_uid, payload=f"{t_uid}")
+    t._add_peer(pkt)
+    t2._add_peer(pkt2)
+    t._add_peer(pkt3)
+    t3._add_peer(pkt4)
 
     for who_uid, datas_to_store in chunked_data.items():
         for data_to_store in datas_to_store:
