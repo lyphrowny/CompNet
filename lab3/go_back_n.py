@@ -54,7 +54,7 @@ class Sender:
 
     s_to_r_stream: PacketQueue
     r_to_s_stream: PacketQueue
-    message: Sequence[str]
+    message: Sequence[str] = [""]
     window_size: int = 10
     timeout: float = 1.0
     n_sent: int = attrs.field(init=False, default=0)
@@ -73,6 +73,14 @@ class Sender:
         self.num_packets = len(self.message)
         self._update_stream_vars()
         self.done = False
+
+    def send_termination_packet(self):
+        orig_loss = self.s_to_r_stream.loss_probability
+        self.s_to_r_stream.loss_probability = 0
+        self.s_to_r_stream.send(LPacket(seq_num=EOT, payload="S"))
+        self.s_to_r_stream.loss_probability = orig_loss
+        self.done = True
+        self.should_terminate = True
 
     def _update_stream_vars(self):
         self.left_bound = 0  # left boundary of the window
@@ -121,7 +129,7 @@ class Sender:
 
 
 @attrs.define
-class Reciever:
+class Receiver:
     """Go-Back-N reciever
 
     Recieve packets and send ACKs for recieved ones.

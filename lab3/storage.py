@@ -1,18 +1,24 @@
-from collections.abc import Iterator, Mapping, MutableMapping
 import copy
 import enum
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from functools import wraps
 from itertools import batched
 from queue import Queue
-from typing import Literal, NewType, cast, override, ClassVar
+from threading import Thread
+from typing import ClassVar, Literal, NewType, Self, cast, override
+
 import attrs
 
-from lab3.network import NodeProto
+from .go_back_n import Receiver, Sender
+from .network import NodeProto
+from .stream import PacketQueue as Stream
 
-EOT = -1
+# EOT = -1
 
 Addr = NewType("Addr", str)
 UID = NewType("UID", str)
+SStream = NewType("SStream", Stream)
+RStream = NewType("RStream", Stream)
 
 
 @attrs.define
@@ -86,30 +92,55 @@ class Packet:
     # sequence num
     # seq: int
     # what to do with this packet
-    action: Action
+    action: Action = attrs.field(converter=Action, repr=lambda v: v.value)
     # to whom this packet is for
     receiver_uid: UID
     # other stuff
     payload: str
 
+    @classmethod
+    def from_string(cls, string: str) -> Self:
+        return cast(Self, eval(string))
+
 
 @attrs.define
 class Peer:
     uid: UID
-    addr: Addr
     # a receiver stream which the peer listens on
     # ttp stands for transmitter-to-peer
     # send stream, because transmitter is the main role,
     # so it sends to peer
     ttp_stream: SStream
     ptt_stream: RStream
+    sender: Sender
+    receiver: Receiver
+    ths: Iterable[Thread] = attrs.field(init=False)
 
     @classmethod
-    def from_payload(cls, payload: str):
-        uid = cast(UID, payload[:4])
-        addr = cast(Addr, payload[4:])
-        ttp_stream, ptt_stream = AddressMapper.get(uid, addr)
-        return cls(uid, addr, ttp_stream, ptt_stream)
+    def from_payload(cls, t_uid: UID, payload: str, received_packets: Queue[Packet]):
+        p_uid = cast(UID, payload[:4])
+        ttp_stream, ptt_stream = AddressMapper.get(t_uid, p_uid)
+        sender = Sender(ttp_stream, ptt_stream)
+        receiver = Receiver(ttp_stream, ptt_stream, received_packets)
+        return cls(p_uid, ttp_stream, ptt_stream, sender, receiver)
+
+    def start(self):
+        self.ths = [Thread(target=self.sender.run), Thread(target=self.receiver.run)]
+        for th in self.ths:
+            th.start()
+
+    def terminate(self):
+        self.sender.send_termination_packet()
+        for th in self.ths:
+            th.join()
+
+    def send_packet(self, packet: Packet):
+        self.sender.send_packet(packet)
+
+    # def get_packet(self) -> Packet | None:
+    #     if not self.received_packets.empty():
+    #         return self.received_packets.get()
+    #     return None
 
 
 def if_for_me(func):
@@ -215,7 +246,8 @@ class Transmitter:
     @if_for_me
     def _add_peer(self, packet: Packet):
         # if packet.receiver_uid == self.uid:
-        peer = Peer.from_payload(packet.payload)
+        peer = Peer.from_payload(self.uid, packet.payload, self._packet_queue)
+        peer.start()
         self.peers[peer.uid] = peer
         # else:
         #     self.retransmit(packet)
@@ -223,6 +255,9 @@ class Transmitter:
     @if_for_me
     def _terminate(self, packet: Packet):
         self._should_terminate = True
+
+        for peer in self.peers.values():
+            peer.terminate()
 
         # close all the threads for sender and receiver
 
@@ -232,7 +267,7 @@ class Transmitter:
 
     def send(self, peer_uid: UID, packet: Packet):
         peer = self.peers[peer_uid]
-        _send(peer.stream, packet)
+        peer.send_packet(packet)
 
 
 # end of stored data
@@ -258,42 +293,42 @@ class Storage:
             return EOS
 
 
-@attrs.define
-class StorageNode(NodeProto):
-    idx: int
-    latency: float
-    storage: str = attrs.field(init=False)
-    _storage_iterator: Iterator[str] = attrs.field(init=False, default=None)
+# @attrs.define
+# class StorageNode(NodeProto):
+#     idx: int
+#     latency: float
+#     storage: str = attrs.field(init=False)
+#     _storage_iterator: Iterator[str] = attrs.field(init=False, default=None)
 
-    @override
-    def __hash__(self) -> int:
-        return hash(self.idx)
+#     @override
+#     def __hash__(self) -> int:
+#         return hash(self.idx)
 
-    @override
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, "StorageNode"):
-            raise NotImplementedError
-        return self.idx == other.idx
+#     @override
+#     def __eq__(self, other: object) -> bool:
+#         if not isinstance(other, "StorageNode"):
+#             raise NotImplementedError
+#         return self.idx == other.idx
 
-    @override
-    def __lt__(self, other: object) -> bool:
-        if not isinstance(other, "StorageNode"):
-            raise NotImplementedError
-        return self.idx < other.idx
+#     @override
+#     def __lt__(self, other: object) -> bool:
+#         if not isinstance(other, "StorageNode"):
+#             raise NotImplementedError
+#         return self.idx < other.idx
 
-    @override
-    @staticmethod
-    def dist(a: object, b: object) -> float:
-        if not isinstance(a, "StorageNode"):
-            raise NotImplementedError
-        if not isinstance(b, "StorageNode"):
-            raise NotImplementedError
-        return a.latency + b.latency
+#     @override
+#     @staticmethod
+#     def dist(a: object, b: object) -> float:
+#         if not isinstance(a, "StorageNode"):
+#             raise NotImplementedError
+#         if not isinstance(b, "StorageNode"):
+#             raise NotImplementedError
+#         return a.latency + b.latency
 
-    def next_chunk(self):
-        if self._storage_iterator is None:
-            self._storage_iterator = iter(self.storage)
-        try:
-            return next(self._storage_iterator)
-        except StopIteration:
-            return EOT
+#     def next_chunk(self):
+#         if self._storage_iterator is None:
+#             self._storage_iterator = iter(self.storage)
+#         try:
+#             return next(self._storage_iterator)
+#         except StopIteration:
+#             return EOT
