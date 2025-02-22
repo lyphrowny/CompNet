@@ -57,7 +57,7 @@ class Sender:
     r_to_s_stream: PacketQueue = attrs.field(repr=lambda v: f"{id(v._queue):x}"[~4:])
     message: Sequence[str] = [""]
     window_size: int = 10
-    timeout: float = 1.0
+    timeout: float = 0.001
     n_sent: int = attrs.field(init=False, default=0)
     num_packets: int = attrs.field(init=False, default=0)
     should_terminate: bool = attrs.field(init=False, default=False)
