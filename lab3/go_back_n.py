@@ -1,9 +1,13 @@
+from collections.abc import Iterable, Sequence
+from itertools import batched
+from queue import Queue
 import time
 
 import attrs
 
-from .stream import EOT, Packet, PacketQueue
+from .stream import EOT, PacketQueue, Packet as LPacket
 from .utils import get_logger
+from .storage import Packet
 
 rlog = get_logger("r")
 slog = get_logger("s")
@@ -50,53 +54,70 @@ class Sender:
 
     s_to_r_stream: PacketQueue
     r_to_s_stream: PacketQueue
-    message: str
+    message: Sequence[str]
     window_size: int = 10
     timeout: float = 1.0
     n_sent: int = attrs.field(init=False, default=0)
     num_packets: int = attrs.field(init=False)
+    should_terminate: bool = attrs.field(init=False, default=False)
+    # bool state whether the message has been sent or not
+    done: bool = attrs.field(init=False, default=True)
+    left_bound: int = attrs.field(init=False)
+    m_pos: int = attrs.field(init=False)
+    last_send_time: float = attrs.field(init=False)
 
-    def __attrs_post_init__(self):
+    def send_packet(self, high_packet: Packet):
+        assert self.done
+        # will have 100 chars in packet's payload
+        self.message = list(map("".join, batched(f"{high_packet}", 100)))
         self.num_packets = len(self.message)
+        self._update_stream_vars()
+        self.done = False
+
+    def _update_stream_vars(self):
+        self.left_bound = 0  # left boundary of the window
+        self.m_pos = 0  # message position
+        self.last_send_time = 0
 
     def run(self):
         seq_mod = self.window_size + 1
-        left_bound = 0  # left boundary of the window
-        m_pos = 0  # message position
-        last_send_time = 0
-        while left_bound < self.num_packets:
+        self._update_stream_vars()
+        while not self.should_terminate:
             if self.r_to_s_stream:
                 packet = self.r_to_s_stream.recieve()
                 slog.debug(f"Recieved ACK for {packet.seq_num}")
                 slog.debug(
-                    f"Window before update {self.message[left_bound : left_bound + self.window_size]!r}"
+                    f"Window before update {self.message[self.left_bound : self.left_bound + self.window_size]!r}"
                 )
                 # we can ignore "casting" left_bound to [0, seq_mod - 1],
                 # because (a-b)%c = a%c - b%c (assuming, -b%c is within [0, seq_mod - 1])
                 # (a-b%c)%c === (a-b)%c
                 # calculate the difference between recieved seq_num and current left_bound
                 # then move the left_bound so that it "points" at the next yet unACKed packet
-                left_bound += (packet.seq_num - left_bound) % seq_mod
+                self.left_bound += (packet.seq_num - self.left_bound) % seq_mod
                 slog.debug(
-                    f"Window after update {self.message[left_bound : left_bound + self.window_size]!r}"
+                    f"Window after update {self.message[self.left_bound : self.left_bound + self.window_size]!r}"
                 )
 
-            if m_pos < min(left_bound + self.window_size, self.num_packets):
-                packet = Packet(
-                    seq_num=m_pos % seq_mod,
-                    payload=self.message[m_pos],
+            if self.m_pos < min(self.left_bound + self.window_size, self.num_packets):
+                packet = LPacket(
+                    seq_num=self.m_pos % seq_mod,
+                    payload=self.message[self.m_pos],
                 )
                 slog.debug(f"Sent {packet}")
                 self.s_to_r_stream.send(packet)
-                m_pos += 1
+                self.m_pos += 1
                 self.n_sent += 1
                 last_send_time = time.monotonic()
 
-            if last_send_time + self.timeout < time.monotonic():
+            if self.last_send_time + self.timeout < time.monotonic():
                 slog.debug(
-                    f"Timed out, resending from {left_bound} ({self.message[left_bound : left_bound + 1]})"
+                    f"Timed out, resending from {self.left_bound} ({self.message[self.left_bound : self.left_bound + 1]})"
                 )
-                m_pos = left_bound
+                self.m_pos = self.left_bound
+
+            if self.m_pos >= self.num_packets:
+                self.done = True
 
 
 @attrs.define
@@ -110,9 +131,10 @@ class Reciever:
 
     s_to_r_stream: PacketQueue
     r_to_s_stream: PacketQueue
+    received_packets: Queue[Packet]
     window_size: int = 10
     n_recieved: int = attrs.field(init=False, default=0)
-    recieved_message: str = attrs.field(init=False, default="")
+    received_payload: str = attrs.field(init=False, default="")
 
     def run(self):
         seq_mod = self.window_size + 1
@@ -133,7 +155,12 @@ class Reciever:
             if packet.seq_num == expected_seq_num:
                 n_right += 1
                 rlog.debug(f"Recieved {packet}")
-                self.recieved_message += packet.payload
+                self.received_payload += packet.payload
+                if self.received_payload.endswith(str(b"\0")):
+                    self.received_packets.put(
+                        Packet.from_string(self.received_payload[:~0])
+                    )
+                    self.received_payload = ""
                 rlog.debug(
                     f"Sent ACK {expected_seq_num} Request {(expected_seq_num + 1) % seq_mod}"
                 )
@@ -142,9 +169,9 @@ class Reciever:
                 n_wrong += 1
                 rlog.debug(f"Ignoring {packet}: was expecting {expected_seq_num}")
                 rlog.debug(f"Sending Request {expected_seq_num}")
-            rlog.debug(f"Current message {self.recieved_message!r}")
-            self.r_to_s_stream.send(Packet(seq_num=expected_seq_num, payload="ACK"))
+            rlog.debug(f"Current message {self.received_payload!r}")
+            self.r_to_s_stream.send(LPacket(seq_num=expected_seq_num, payload="ACK"))
 
-        rlog.debug(f"Recieved message: {self.recieved_message}")
+        rlog.debug(f"Recieved message: {self.received_payload}")
         rlog.debug(f"{n_right = }")
         rlog.debug(f"{n_wrong = }")
