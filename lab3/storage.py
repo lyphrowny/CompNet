@@ -201,7 +201,8 @@ class Storage:
 class DesignatedStorage:
     batch_size: int = attrs.field(default=14)
     stored_data: MutableMapping[int, str] = attrs.field(
-        init=False, default=defaultdict(str)
+        init=False,
+        default=defaultdict(str),
     )
 
     def store(self, data: str) -> None:
@@ -211,6 +212,9 @@ class DesignatedStorage:
         self.stored_data[data_id] = data
         print(f"{self.stored_data = }")
         # self._stored_iterator = batched("ABC\x00", self._batch_size)
+
+    def assemble(self) -> str:
+        return "".join(d for _, d in sorted(self.stored_data.items()))
 
 
 @attrs.define
@@ -511,6 +515,15 @@ def assemble_data(conductor: Transmitter, uids: Iterable[UID]):
         )
 
 
+def wait_for_assemble_completion(conductor_storage: DesignatedStorage, n_batches: int):
+    # hack: if called terminate_all without waiting,
+    # the data won't be fully assembled. Can't think of a fix
+    # for now
+    while len(conductor_storage.stored_data) != n_batches:
+        print(f"{len(conductor_storage.stored_data) = }, {n_batches = }")
+        time.sleep(0.1)
+
+
 def terminate_all(conductor: Transmitter, shortest_paths: Paths):
     for path in shortest_paths.values():
         # skip the 0th node, which is conductor
@@ -570,6 +583,40 @@ if __name__ == "__main__":
     conductor = transmitters[c_uid]
     print(transmitters)
     # quit()
+
+    ths = [Thread(target=t.run) for t in transmitters.values()]
+    for th in ths:
+        th.start()
+
+    befriend_peers(
+        shortest_paths=shortest_paths,
+        transmitters=transmitters,
+    )
+    distributed_data = make_data_distribution(
+        data,
+        uids,
+        batch_size=batch_size,
+    )
+    distribute_data(distributed_data, conductor)
+    assemble_data(conductor=conductor, uids=uids)
+    wait_for_assemble_completion(
+        conductor_storage=conductor.storage,
+        n_batches=sum(
+            map(len, distributed_data.values()),
+        ),
+    )
+    terminate_all(
+        conductor=conductor,
+        shortest_paths=shortest_paths,
+    )
+    for th in ths:
+        th.join()
+
+    assembled_data = conductor.storage.assemble()
+    assert assembled_data == data, "".join(difflib.unified_diff(assembled_data, data))
+    print(f"{assembled_data = }")
+
+    quit()
 
     p_uid, tp_uid = uids
 
