@@ -174,9 +174,9 @@ class TransmitterNode(NodeProto):
 
 @attrs.define
 class Storage:
+    batch_size: int = attrs.field(default=14)
     stored_data: str = attrs.field(init=False, default="")
     _stored_iterator: Iterator[str] = attrs.field(init=False, default=None)
-    _batch_size: int = attrs.field(init=False, default=14)
     is_ready: bool = attrs.field(init=False, default=False)
 
     def store(self, data: str) -> None:
@@ -184,7 +184,7 @@ class Storage:
         self.stored_data += data
         if self.stored_data.endswith(EOS):
             self.stored_data = self.stored_data[:~0]
-            self._stored_iterator = batched(self.stored_data, self._batch_size)
+            self._stored_iterator = batched(self.stored_data, self.batch_size)
             self.is_ready = True
         print(f"{self.stored_data = }")
         # self._stored_iterator = batched("ABC\x00", self._batch_size)
@@ -199,11 +199,11 @@ class Storage:
 
 @attrs.define
 class DesignatedStorage:
+    batch_size: int = attrs.field(default=14)
     stored_data: MutableMapping[int, str] = attrs.field(
         init=False, default=defaultdict(str)
     )
     _stored_iterator: Iterator[str] = attrs.field(init=False)
-    _batch_size: int = attrs.field(init=False, default=14)
 
     def store(self, data: str) -> None:
         """Store data until it has EOS, then init iterator."""
@@ -422,10 +422,16 @@ def make_tnodes(
 def make_transmiters(
     shortest_paths: Paths,
     designated_uid: UID,
+    batch_size: int = 14,
 ) -> Mapping[UID, Transmitter]:
-    transmitters = {designated_uid: Transmitter(designated_uid, DesignatedStorage())}
+    transmitters = {
+        designated_uid: Transmitter(
+            designated_uid,
+            DesignatedStorage(batch_size=batch_size),
+        )
+    }
     for tnode in shortest_paths.keys() - designated_uid:
-        transmitters[tnode.uid] = Transmitter(tnode.uid)
+        transmitters[tnode.uid] = Transmitter(tnode.uid, Storage(batch_size=batch_size))
         for peer1, peer2 in pairwise(shortest_paths[tnode]):
             _add_connection(peer1.uid, peer2.uid)
 
@@ -448,6 +454,53 @@ def befriend_peers(
             # conductor.send(paths[1].uid, pkt2)
 
 
+def make_data_distribution(
+    data: str,
+    n_consumers: int,
+    batch_size: int,
+) -> Iterable[Iterable[str]]:
+    consumers = range(n_consumers)
+    distributed_data: Iterable[Iterable[str]] = [[] for _ in consumers]
+    for i, batch in enumerate(batched(data, batch_size)):
+        distributed_data[random.choice(consumers)].append(f"{i:04}{''.join(batch)}")
+    return distributed_data
+
+
+def make_data_distribution(
+    data: str,
+    uids: Sequence[UID],
+    batch_size: int,
+) -> MutableMapping[UID, list[str]]:
+    distributed_data: MutableMapping[UID, list[str]] = defaultdict(list)
+    for i, batch in enumerate(batched(data, batch_size)):
+        uid = random.choice(uids)
+        distributed_data[uid].append(f"{i:04}{''.join(batch)}")
+    return distributed_data
+
+
+def distribute_data(
+    distributed_data: MutableMapping[UID, list[str]],
+    conductor: Transmitter,
+) -> None:
+    for uid, datas_to_store in distributed_data.items():
+        for data_to_store in datas_to_store:
+            conductor._packet_queue.put(
+                Packet(
+                    Action.STORE,
+                    receiver_uid=uid,
+                    payload=data_to_store,
+                )
+            )
+        # send the end of store marker
+        conductor._packet_queue.put(
+            Packet(
+                Action.STORE,
+                receiver_uid=uid,
+                payload=EOS,
+            ),
+        )
+
+
 if __name__ == "__main__":
     import uuid
 
@@ -456,26 +509,40 @@ if __name__ == "__main__":
     _unset_debug_logging_level()
 
     num_nodes = 3
+    batch_size = 10
+    # conductor idx in uids
+    c_idx = 0
 
     uids = make_uids(num_uids=num_nodes)
+    # conductor
+    c_uid = uids[c_idx]
+    del uids[c_idx]
     latencies = [0.5, 0.3, 0.5]
     tnodes = make_tnodes(uids, latencies)
     net = Network.from_nodes(list(tnodes.values()), max_distance=0.8)
     shortest_paths = net.ospf(tnodes[uids[0]])
     print(net)
 
-    transmitters = make_transmiters(shortest_paths, designated_uid=uids[0])
+    distributed_data = make_data_distribution(data, uids, batch_size)
+
+    transmitters = make_transmiters(
+        shortest_paths,
+        designated_uid=uids[0],
+        # +4 because we add batch id in form of "{id:04}"
+        # to later reconstuct the original message
+        batch_size=batch_size + 4,
+    )
     print(transmitters)
     # quit()
 
-    t_uid, p_uid, tp_uid = uids
+    p_uid, tp_uid = uids
 
-    t = Transmitter(t_uid, DesignatedStorage())
+    t = Transmitter(c_uid, DesignatedStorage())
     t2 = Transmitter(p_uid)
     t3 = Transmitter(tp_uid)
 
-    _add_connection(t_uid, p_uid)
-    _add_connection(t_uid, tp_uid)
+    _add_connection(c_uid, p_uid)
+    _add_connection(c_uid, tp_uid)
 
     # pkt = Packet(Action.ADD, receiver_uid=t_uid, payload=f"{p_uid}")
     # pkt2 = Packet(Action.ADD, receiver_uid=p_uid, payload=f"{t_uid}")
@@ -495,7 +562,7 @@ if __name__ == "__main__":
     print()
     pprint(AddressMapper.address_to_stream)
 
-    chunked_data = split_data(data, (p_uid, tp_uid), 10)
+    # chunked_data = split_data(data, (p_uid, tp_uid), 10)
 
     th1 = Thread(target=t.run)
     th2 = Thread(target=t2.run)
@@ -504,49 +571,56 @@ if __name__ == "__main__":
     th2.start()
     th3.start()
 
-    pkt = Packet(Action.ADD, receiver_uid=t_uid, payload=f"{p_uid}")
-    pkt2 = Packet(Action.ADD, receiver_uid=p_uid, payload=f"{t_uid}")
-    pkt3 = Packet(Action.ADD, receiver_uid=t_uid, payload=f"{tp_uid}")
-    pkt4 = Packet(Action.ADD, receiver_uid=tp_uid, payload=f"{t_uid}")
+    pkt = Packet(Action.ADD, receiver_uid=c_uid, payload=f"{p_uid}")
+    pkt2 = Packet(Action.ADD, receiver_uid=p_uid, payload=f"{c_uid}")
+    pkt3 = Packet(Action.ADD, receiver_uid=c_uid, payload=f"{tp_uid}")
+    pkt4 = Packet(Action.ADD, receiver_uid=tp_uid, payload=f"{c_uid}")
 
     t._add_peer(pkt)
     t2._add_peer(pkt2)
     t._add_peer(pkt3)
     t3._add_peer(pkt4)
 
-    for who_uid, datas_to_store in chunked_data.items():
-        for data_to_store in datas_to_store:
-            t._packet_queue.put(
-                Packet(
-                    Action.STORE,
-                    receiver_uid=who_uid,
-                    payload=data_to_store,
-                ),
-            )
-            # t.send(
-            #     who_uid,
-            #     Packet(
-            #         Action.STORE,
-            #         receiver_uid=who_uid,
-            #         payload=data_to_store,
-            #     ),
-            # )
-    for who_uid in chunked_data:
-        t._packet_queue.put(
-            Packet(
-                Action.STORE,
-                receiver_uid=who_uid,
-                payload="\x00",
-            ),
-        )
-        # t.send(
-        #     who_uid,
-        #     Packet(
-        #         Action.STORE,
-        #         receiver_uid=who_uid,
-        #         payload="\x00",
-        #     ),
-        # )
+    distributed_data = make_data_distribution(
+        data,
+        (p_uid, tp_uid),
+        batch_size=batch_size,
+    )
+    distribute_data(distributed_data, t)
+
+    # for who_uid, datas_to_store in chunked_data.items():
+    #     for data_to_store in datas_to_store:
+    #         t._packet_queue.put(
+    #             Packet(
+    #                 Action.STORE,
+    #                 receiver_uid=who_uid,
+    #                 payload=data_to_store,
+    #             ),
+    #         )
+    #         # t.send(
+    #         #     who_uid,
+    #         #     Packet(
+    #         #         Action.STORE,
+    #         #         receiver_uid=who_uid,
+    #         #         payload=data_to_store,
+    #         #     ),
+    #         # )
+    # for who_uid in chunked_data:
+    #     t._packet_queue.put(
+    #         Packet(
+    #             Action.STORE,
+    #             receiver_uid=who_uid,
+    #             payload="\x00",
+    #         ),
+    #     )
+    #     # t.send(
+    #     #     who_uid,
+    #     #     Packet(
+    #     #         Action.STORE,
+    #     #         receiver_uid=who_uid,
+    #     #         payload="\x00",
+    #     #     ),
+    #     # )
 
     # t.send(p_uid, Packet(Action.STORE, p_uid, "0000Yo,\x00"))
     # t.send(tp_uid, Packet(Action.STORE, tp_uid, "0001bitch!\x00"))
@@ -562,20 +636,20 @@ if __name__ == "__main__":
     # quit()
 
     # time.sleep(10)
-    t.send(p_uid, Packet(Action.GIVE, p_uid, t_uid))
+    t.send(p_uid, Packet(Action.GIVE, p_uid, c_uid))
     # time.sleep(3)
-    t.send(tp_uid, Packet(Action.GIVE, tp_uid, t_uid))
-    while not len(t.storage.stored_data) == sum(map(len, chunked_data.values())):
+    t.send(tp_uid, Packet(Action.GIVE, tp_uid, c_uid))
+    while not len(t.storage.stored_data) == sum(map(len, distributed_data.values())):
         print()
         print()
         print()
         print(f"{len(t.storage.stored_data) = }")
-        print(f"{sum(map(len, chunked_data.values())) = }")
+        print(f"{sum(map(len, distributed_data.values())) = }")
         print()
         print()
         print()
         time.sleep(3)
-    t._terminate(Packet(Action.TERM, t_uid, ""))
+    t._terminate(Packet(Action.TERM, c_uid, ""))
     t2._terminate(Packet(Action.TERM, p_uid, ""))
     t3._terminate(Packet(Action.TERM, tp_uid, ""))
     th1.join()
@@ -584,12 +658,12 @@ if __name__ == "__main__":
 
     print()
     print()
-    for key, dat in chunked_data.items():
+    for key, dat in distributed_data.items():
         print(key)
         for dd in dat:
             print(f"\t{dd!r}")
     print()
-    print(sum(map(len, chunked_data.values())))
+    print(sum(map(len, distributed_data.values())))
     print()
     print(f"{t.storage.stored_data = }")
     st_data = t.storage.stored_data
