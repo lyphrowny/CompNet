@@ -6,6 +6,7 @@ from itertools import batched
 import logging
 from queue import Queue
 from threading import Thread
+import time
 from typing import ClassVar, Literal, NewType, Self, cast, override
 
 import attrs
@@ -115,8 +116,8 @@ class Peer:
     def start(self):
         self.ths = [
             Thread(target=self.real_sender.run),
-            Thread(target=self.dummy_receiver.run),
-            Thread(target=self.dummy_sender.run),
+            # Thread(target=self.dummy_receiver.run),
+            # Thread(target=self.dummy_sender.run),
             Thread(target=self.real_receiver.run),
         ]
         for th in self.ths:
@@ -124,6 +125,7 @@ class Peer:
 
     def terminate(self):
         self.real_sender.send_termination_packet()
+        # self.dummy_sender.send_termination_packet()
         for th in self.ths:
             th.join()
 
@@ -139,7 +141,7 @@ class Peer:
 def if_for_me(func):
     # @wraps
     def wrapper(self: "Transmitter", packet: Packet, *a, **kw):
-        if packet.receiver_uid == self.uid:
+        if packet.receiver_uid == UID("") or packet.receiver_uid == self.uid:
             func(self, packet, *a, **kw)
         else:
             self._relay(packet)
@@ -247,10 +249,13 @@ class Transmitter:
 
     @if_for_me
     def _terminate(self, packet: Packet):
+        print(f"Got here")
         self._should_terminate = True
 
         for peer in self.peers.values():
             peer.terminate()
+
+        print(f"peers terminated")
 
         # close all the threads for sender and receiver
 
@@ -356,10 +361,6 @@ if __name__ == "__main__":
     t._add_peer(pkt)
     t2._add_peer(pkt2)
 
-    th = Thread(target=t2.run)
-    th.start()
-    t.send(p_uid, Packet(Action.STORE, p_uid, "Yo!"))
-
     from pprint import pprint
 
     pprint(t.peers)
@@ -368,3 +369,14 @@ if __name__ == "__main__":
 
     print()
     pprint(AddressMapper.address_to_stream)
+
+    th1 = Thread(target=t.run)
+    th2 = Thread(target=t2.run)
+    th1.start()
+    th2.start()
+    t.send(p_uid, Packet(Action.STORE, p_uid, "Yo!"))
+    time.sleep(1)
+    t._terminate(Packet(Action.TERM, t_uid, ""))
+    t2._terminate(Packet(Action.TERM, p_uid, ""))
+    th1.join()
+    th2.join()

@@ -1,13 +1,14 @@
 from collections.abc import Iterable, Sequence
 from itertools import batched
 from queue import Queue
+import threading
 import time
 
 import attrs
 
 from .stream import EOT, PacketQueue, Packet as LPacket
 from .utils import get_logger
-from .high_transfer import Packet
+from .high_transfer import Packet, UID, Action
 
 rlog = get_logger("r")
 slog = get_logger("s")
@@ -67,7 +68,9 @@ class Sender:
     last_send_time: float = attrs.field(init=False)
 
     def send_packet(self, high_packet: Packet):
-        assert self.done
+        # if not self.done:
+        #     breakpoint()
+        assert self.done, (self, threading.get_ident())
         # will have 100 chars in packet's payload
         self.message = list(map("".join, batched(f"{high_packet}\x00", 100)))
         self.num_packets = len(self.message)
@@ -75,6 +78,7 @@ class Sender:
         self.done = False
 
     def send_termination_packet(self):
+        slog.info(f"Terminating")
         orig_loss = self.s_to_r_stream.loss_probability
         self.s_to_r_stream.loss_probability = 0
         self.s_to_r_stream.send(LPacket(seq_num=EOT, payload="S"))
@@ -125,7 +129,10 @@ class Sender:
                 self.m_pos = self.left_bound
 
             if self.m_pos >= self.num_packets:
+                # self.message = [""]
                 self.done = True
+
+        slog.info(f"Sender terminated {self}")
 
 
 @attrs.define
@@ -143,6 +150,7 @@ class Receiver:
     window_size: int = 10
     n_recieved: int = attrs.field(init=False, default=0)
     received_payload: str = attrs.field(init=False, default="")
+    terminated: bool = attrs.field(init=False, default=False)
 
     def run(self):
         seq_mod = self.window_size + 1
@@ -157,6 +165,9 @@ class Receiver:
 
             # transfer ended
             if packet.seq_num == EOT:
+                rlog.info(f"I'm terminating {self}")
+                self.terminated = True
+                self.received_packets.put(Packet(Action.TERM, UID(""), ""))
                 break
 
             self.n_recieved += 1
@@ -185,3 +196,5 @@ class Receiver:
         rlog.debug(f"Recieved message: {self.received_payload}")
         rlog.debug(f"{n_right = }")
         rlog.debug(f"{n_wrong = }")
+
+        self.terminated = True
