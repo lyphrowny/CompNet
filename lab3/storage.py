@@ -420,18 +420,18 @@ def make_tnodes(
 
 def make_transmiters(
     shortest_paths: Paths,
-    designated_uid: UID,
+    conductor_uid: UID,
     batch_size: int = 14,
 ) -> Mapping[UID, Transmitter]:
     transmitters = {
-        designated_uid: Transmitter(
-            designated_uid,
+        conductor_uid: Transmitter(
+            conductor_uid,
             DesignatedStorage(batch_size=batch_size),
         )
     }
-    for tnode in shortest_paths.keys() - designated_uid:
+    for tnode, path in shortest_paths.items():
         transmitters[tnode.uid] = Transmitter(tnode.uid, Storage(batch_size=batch_size))
-        for peer1, peer2 in pairwise(shortest_paths[tnode]):
+        for peer1, peer2 in pairwise(path):
             _add_connection(peer1.uid, peer2.uid)
 
     return transmitters
@@ -511,6 +511,27 @@ def assemble_data(conductor: Transmitter, uids: Iterable[UID]):
         )
 
 
+def terminate_all(conductor: Transmitter, shortest_paths: Paths):
+    for path in shortest_paths.values():
+        # skip the 0th node, which is conductor
+        for peer in reversed(path[1:]):
+            conductor._packet_queue.put(
+                Packet(
+                    Action.TERM,
+                    receiver_uid=peer.uid,
+                    payload="",
+                )
+            )
+    # terminate ourselves
+    conductor._packet_queue.put(
+        Packet(
+            Action.TERM,
+            receiver_uid=conductor.uid,
+            payload="",
+        )
+    )
+
+
 if __name__ == "__main__":
     import uuid
 
@@ -524,24 +545,29 @@ if __name__ == "__main__":
     c_idx = 0
 
     uids = make_uids(num_uids=num_nodes)
+    latencies = [0.5, 0.3, 0.5]
+    latencies = [0.1, 0.1, 0.1]
+    tnodes = make_tnodes(uids, latencies)
+    net = Network.from_nodes(list(tnodes.values()), max_distance=0.8)
     # conductor
     c_uid = uids[c_idx]
     del uids[c_idx]
-    latencies = [0.5, 0.3, 0.5]
-    tnodes = make_tnodes(uids, latencies)
-    net = Network.from_nodes(list(tnodes.values()), max_distance=0.8)
-    shortest_paths = net.ospf(tnodes[uids[0]])
+    shortest_paths = net.ospf(tnodes[c_uid])
+    print(shortest_paths)
+    print(shortest_paths[tnodes[c_uid]])
+    del shortest_paths[tnodes[c_uid]]
     print(net)
 
     distributed_data = make_data_distribution(data, uids, batch_size)
 
     transmitters = make_transmiters(
         shortest_paths,
-        designated_uid=uids[0],
+        conductor_uid=c_uid,
         # +4 because we add batch id in form of "{id:04}"
         # to later reconstuct the original message
         batch_size=batch_size + 4,
     )
+    conductor = transmitters[c_uid]
     print(transmitters)
     # quit()
 
@@ -664,9 +690,12 @@ if __name__ == "__main__":
         print()
         print()
         time.sleep(3)
-    t._terminate(Packet(Action.TERM, c_uid, ""))
-    t2._terminate(Packet(Action.TERM, p_uid, ""))
-    t3._terminate(Packet(Action.TERM, tp_uid, ""))
+
+    a, b, c = starmap(TransmitterNode, zip((c_uid, p_uid, tp_uid), (0.1, 0.1, 0.1)))
+    terminate_all(t, {b: [a, b], c: [a, c]})
+    # t._terminate(Packet(Action.TERM, c_uid, ""))
+    # t2._terminate(Packet(Action.TERM, p_uid, ""))
+    # t3._terminate(Packet(Action.TERM, tp_uid, ""))
     th1.join()
     th2.join()
     th3.join()
