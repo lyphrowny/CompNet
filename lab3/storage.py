@@ -3,7 +3,8 @@ import copy
 import enum
 from functools import wraps
 from itertools import batched
-from typing import NewType, cast, override, ClassVar
+from queue import Queue
+from typing import Literal, NewType, cast, override, ClassVar
 import attrs
 
 from lab3.network import NodeProto
@@ -16,15 +17,50 @@ UID = NewType("UID", str)
 
 @attrs.define
 class AddressMapper:
+    """A global addr-to-stream hub."""
+
     address_to_stream: ClassVar[MutableMapping[Addr, Stream]]
 
-    @classmethod
-    def add_stream(cls, addr: Addr):
-        cls.address_to_stream[addr] = Stream()
+    @staticmethod
+    def _create_ptp_addr(
+        t_uid: UID,
+        p_uid: UID,
+        stream_type: Literal["s", "r"],
+    ) -> Addr:
+        return cast(Addr, f"{t_uid}-{p_uid}_{stream_type}")
+
+    @staticmethod
+    def _create_ptp_addrs(
+        t_uid: UID,
+        p_uid: UID,
+    ) -> tuple[Addr, Addr]:
+        return (
+            AddressMapper._create_ptp_addr(t_uid, p_uid, "s"),
+            AddressMapper._create_ptp_addr(t_uid, p_uid, "r"),
+        )
 
     @classmethod
-    def get(cls, addr: Addr):
-        return cls.address_to_stream[addr]
+    def add_streams(cls, peer1_uid: UID, peer2_uid: UID) -> None:
+        r"""Add send and receive streams for peers.
+
+        2 streams will be created: a SendStream from peer1 to peer2
+        and a ReceiveStream from peer2 to peer1, thus forming a one-way connection.
+
+        For a--b to have a duplex connection, one has to form 2 one-way connections
+        = call this function 2 times: (a, b) and (b, a). This is unfortunate, but
+        the Receiver and Sender were implemented as separate instances, which listen
+        to different channels. If Receiver and Sender were merged, they could use
+        only one stream.
+        """
+        s_to_r_addr, r_to_s_addr = AddressMapper._create_ptp_addrs(peer1_uid, peer2_uid)
+        cls.address_to_stream[s_to_r_addr] = SStream()
+        cls.address_to_stream[r_to_s_addr] = RStream()
+
+    @classmethod
+    def get(cls, t_uid: UID, p_uid: UID) -> tuple[SStream, RStream]:
+        """Return streams for one-way connection from transmitter to peer."""
+        ttp, ptt = AddressMapper._create_ptp_addrs(t_uid, p_uid)
+        return cls.address_to_stream[ttp], cls.address_to_stream[ptt]
 
 
 class Action(enum.IntEnum):
@@ -36,6 +72,8 @@ class Action(enum.IntEnum):
     ADD = enum.auto()
     # # do nothing, just relay
     # RELAY = enum.auto()
+    # terminate transmitter
+    TERM = enum.auto()
 
 
 @attrs.frozen
@@ -59,14 +97,19 @@ class Packet:
 class Peer:
     uid: UID
     addr: Addr
-    stream: Stream
+    # a receiver stream which the peer listens on
+    # ttp stands for transmitter-to-peer
+    # send stream, because transmitter is the main role,
+    # so it sends to peer
+    ttp_stream: SStream
+    ptt_stream: RStream
 
     @classmethod
     def from_payload(cls, payload: str):
         uid = cast(UID, payload[:4])
         addr = cast(Addr, payload[4:])
-        stream = AddressMapper.get(addr)
-        return cls(uid, addr, stream)
+        ttp_stream, ptt_stream = AddressMapper.get(uid, addr)
+        return cls(uid, addr, ttp_stream, ptt_stream)
 
 
 def if_for_me(func):
@@ -80,27 +123,61 @@ def if_for_me(func):
     return wrapper
 
 
+@attrs.frozen
+class TransmitterNode:
+    uid: UID
+    latency: float
+
+    @staticmethod
+    def dist(a: "TransmitterNode", b: "TransmitterNode") -> float:
+        return a.latency + b.latency
+
+
 @attrs.define
 class Transmitter:
     uid: UID
-    sender: ...
-    receiver: ...
     peers: MutableMapping[UID, Peer]
-    storage: ...
+    storage: "Storage"
+    _should_terminate: bool = attrs.field(init=False, default=False)
+    _packet_queue: Queue[Packet] = attrs.field(factory=Queue)
 
-    def receive(self):
-        while self.receiver.packets:
-            packet: Packet = self.receiver.get()
+    def run(self):
+        while not self._should_terminate:
+            if not self._packet_queue.empty():
+                self._receive_and_act()
 
-            match packet.action:
-                case Action.STORE:
-                    self._store(packet)
-                case Action.GIVE:
-                    self._give(packet)
-                case Action.ADD:
-                    self._add_peer(packet)
-                # case Action.RELAY:
-                #     self._relay(packet)
+    def _receive_and_act(self):
+        packet = self._packet_queue.get()
+        match packet.action:
+            case Action.STORE:
+                self._store(packet)
+            case Action.GIVE:
+                self._give(packet)
+            case Action.ADD:
+                self._add_peer(packet)
+            case Action.TERM:
+                self._terminate(packet)
+
+    # def get_packet(self):
+    #     for peer in self.peers.values():
+    #         if peer.
+
+    # def has_incoming_packets(self):
+    #     for peer in self.peers.values():
+    #         if peer.
+    # def receive(self):
+    #     while self.has_unread_packets():
+    #         packet: Packet = self.read_packet()
+
+    #         match packet.action:
+    #             case Action.STORE:
+    #                 self._store(packet)
+    #             case Action.GIVE:
+    #                 self._give(packet)
+    #             case Action.ADD:
+    #                 self._add_peer(packet)
+    # case Action.RELAY:
+    #     self._relay(packet)
 
     @if_for_me
     def _store(self, packet: Packet):
@@ -114,12 +191,12 @@ class Transmitter:
         peer_uid = packet.receiver_uid
         peer = self.peers.get(peer_uid, None)
         if peer is None:
-            self._send_to_all(packet)
+            self._send_to_all_but_one(peer_uid, packet)
         else:
             self.send(peer_uid, packet)
 
-    def _send_to_all(self, packet: Packet):
-        for peer_uid in self.peers:
+    def _send_to_all_but_one(self, exclude_peer_uid: UID, packet: Packet):
+        for peer_uid in self.peers.keys() - exclude_peer_uid:
             self.send(peer_uid, packet)
 
     def _give(self, packet: Packet):
@@ -143,6 +220,12 @@ class Transmitter:
         # else:
         #     self.retransmit(packet)
 
+    @if_for_me
+    def _terminate(self, packet: Packet):
+        self._should_terminate = True
+
+        # close all the threads for sender and receiver
+
     # def send(self, peer_uid: UID, action, receiver_uid, payload):
     #     peer = self.peers[peer_uid]
     #     _send(peer.stream, action, receiver_uid, payload)
@@ -153,7 +236,7 @@ class Transmitter:
 
 
 # end of stored data
-EOS = b"\0"
+EOS = str(b"\0")
 
 
 @attrs.define
@@ -162,15 +245,15 @@ class Storage:
     _stored_iterator: batched[str] = attrs.field(init=False)
     _batch_size: int = attrs.field(init=False, default=10)
 
-    def store(self, data: str):
+    def store(self, data: str) -> None:
         """Store data until it has EOS, then init iterator."""
         self.stored_data += data
-        if self.stored_data.endswith(str(EOS)):
+        if self.stored_data.endswith(EOS):
             self._stored_iterator = batched(self.stored_data, self._batch_size)
 
-    def give(self):
+    def give(self) -> str:
         try:
-            return next(self._stored_iterator)
+            return "".join(next(self._stored_iterator))
         except StopIteration:
             return EOS
 
