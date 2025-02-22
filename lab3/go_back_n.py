@@ -67,26 +67,34 @@ class Sender:
     m_pos: int = attrs.field(init=False)
     last_send_time: float = attrs.field(init=False)
     seq_num: int = attrs.field(init=False)
+    to_send_queue: Queue[Packet] = attrs.field(init=False, factory=Queue)
 
     def send_packet(self, high_packet: Packet):
+        self.to_send_queue.put(high_packet)
         # if not self.done:
         #     breakpoint()
-        assert self.done, (self, threading.get_ident())
+        # assert self.done, (self, threading.get_ident())
         slog.info(f"Gotta send {high_packet = }")
         # will have 100 chars in packet's payload
-        self.message = list(map("".join, batched(f"{high_packet}\x00", 100)))
+
+        # slog.info(f"Updated stream vars")
+        # slog.info(f"{self.message = }, {self.num_packets = }")
+        # slog.info(
+        #     f"{self.m_pos = }, {self.left_bound = }, {self.window_size = }, {self.num_packets = }"
+        # )
+        # self.done = False
+
+    def _new_interaction(self):
+        self.message = list(
+            map("".join, batched(f"{self.to_send_queue.get()}\x00", 100))
+        )
         self.num_packets = len(self.message)
         orig_loss = self.s_to_r_stream.loss_probability
         self.s_to_r_stream.loss_probability = 0
         self.s_to_r_stream.send(LPacket(seq_num=NIT, payload="S"))
         self.s_to_r_stream.loss_probability = orig_loss
         self._update_stream_vars()
-        slog.info(f"Updated stream vars")
-        slog.info(f"{self.message = }, {self.num_packets = }")
-        slog.info(
-            f"{self.m_pos = }, {self.left_bound = }, {self.window_size = }, {self.num_packets = }"
-        )
-        self.done = False
+        # self.done = False
 
     def send_termination_packet(self):
         slog.info(f"Terminating")
@@ -94,7 +102,7 @@ class Sender:
         self.s_to_r_stream.loss_probability = 0
         self.s_to_r_stream.send(LPacket(seq_num=EOT, payload="S"))
         self.s_to_r_stream.loss_probability = orig_loss
-        self.done = True
+        # self.done = True
         self.should_terminate = True
 
     def _update_stream_vars(self):
@@ -148,9 +156,10 @@ class Sender:
                 # )
                 self.m_pos = self.left_bound
 
-            if self.m_pos >= self.num_packets:
+            if self.m_pos >= self.num_packets and not self.to_send_queue.empty():
+                self._new_interaction()
                 # self.message = [""]
-                self.done = True
+                # self.done = True
 
         slog.info(f"Sender terminated {self}")
 

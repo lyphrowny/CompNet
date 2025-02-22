@@ -128,6 +128,8 @@ class Peer:
             th.start()
 
     def terminate(self):
+        while not self.real_sender.to_send_queue.empty():
+            time.sleep(0.1)
         self.real_sender.send_termination_packet()
         # self.dummy_sender.send_termination_packet()
         for th in self.ths:
@@ -254,7 +256,7 @@ class Transmitter:
                 data,
             )
             self.send(send_to_uid, packet)
-            time.sleep(1)
+            # time.sleep(1)
 
     # @if_for_me
     def _add_peer(self, packet: Packet):
@@ -268,11 +270,10 @@ class Transmitter:
     @if_for_me
     def _terminate(self, packet: Packet):
         print(f"Got here")
-        self._should_terminate = True
-
         for peer in self.peers.values():
             peer.terminate()
 
+        self._should_terminate = True
         print(f"peers terminated")
 
         # close all the threads for sender and receiver
@@ -298,7 +299,7 @@ class Storage:
         if self.stored_data.endswith(EOS):
             self._stored_iterator = batched(self.stored_data, self._batch_size)
         print(f"{self.stored_data = }")
-        # self._stored_iterator = batched("ABC\x00", self._batch_size)
+        self._stored_iterator = batched("ABC\x00", self._batch_size)
 
     def give(self) -> str:
         try:
@@ -390,9 +391,9 @@ if __name__ == "__main__":
     th1.start()
     th2.start()
     t.send(p_uid, Packet(Action.STORE, p_uid, "Yo!\x00"))
-    time.sleep(1)
+    # time.sleep(1)
     t.send(p_uid, Packet(Action.GIVE, p_uid, t_uid))
-    time.sleep(3)
+    # time.sleep(3)
     t._terminate(Packet(Action.TERM, t_uid, ""))
     t2._terminate(Packet(Action.TERM, p_uid, ""))
     th1.join()
