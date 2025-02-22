@@ -1,4 +1,5 @@
 from collections.abc import Iterable, Sequence
+import copy
 from itertools import batched
 from queue import Queue
 import threading
@@ -70,6 +71,7 @@ class Sender:
     to_send_queue: Queue[Packet] = attrs.field(init=False, factory=Queue)
 
     def send_packet(self, high_packet: Packet):
+        # self.to_send_queue.put(copy.deepcopy(high_packet))
         self.to_send_queue.put(high_packet)
         # if not self.done:
         #     breakpoint()
@@ -196,7 +198,14 @@ class Receiver:
             if packet.seq_num == EOT:
                 rlog.info(f"I'm terminating {self}")
                 self.terminated = True
-                self.received_packets.put(Packet(Action.TERM, UID(""), ""))
+                self.received_packets.put(
+                    Packet(
+                        Action.TERM,
+                        receiver_uid=UID(""),
+                        from_uid=UID(""),
+                        payload="",
+                    )
+                )
                 break
 
             if packet.seq_num == NIT:
@@ -215,7 +224,7 @@ class Receiver:
                     self.received_packets.put(
                         Packet.from_string(self.received_payload[:~0])
                     )
-                    rlog.info(Packet.from_string(self.received_payload[:~0]))
+                    # rlog.info(Packet.from_string(self.received_payload[:~0]))
                     self.received_payload = ""
                 rlog.debug(
                     f"Sent ACK {expected_seq_num} Request {(expected_seq_num + 1) % seq_mod}"

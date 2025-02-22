@@ -1,0 +1,7 @@
+assembled_data = 'I have a multi-threading Python program, and a utility function, writeLog(message), that writes out a timestamp followed by the message. Unfortunately, the resultant log file gives no indication of which thread is generating which message.\n\nI would like writeLog() to be able to add something to the message to identify which thread is calling it. Obviously I could just make the threads pass this information in, but that would be a lot more work. Is there some thread equivalent of os.getpid() that I could use?\n'
+
+Time taken: 14.788 secs for simulation_type = 's'
+
+assembled_data = 'I have a multi-threading Python program, and a utility function, writeLog(message), that writes out a timestamp followed by the message. Unfortunately, the resultant log file gives no indication of which thread is generating which message.\n\nI would like writeLog() to be able to add something to the message to identify which thread is calling it. Obviously I could just make the threads pass this information in, but that would be a lot more work. Is there some thread equivalent of os.getpid() that I could use?\n'
+
+Time taken: 10.098 secs for simulation_type = 'l2'

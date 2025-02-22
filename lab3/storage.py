@@ -2,10 +2,18 @@ from collections import defaultdict
 import copy
 import difflib
 import enum
-from collections.abc import Collection, Iterable, Iterator, Mapping, MutableMapping
+from collections.abc import (
+    Collection,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+)
 from functools import wraps
 from itertools import batched, pairwise, starmap
 import logging
+import math
 from pathlib import Path
 from queue import Queue
 import random
@@ -15,7 +23,7 @@ from typing import ClassVar, Literal, NewType, Self, Sequence, cast, override
 
 import attrs
 
-from .network import Network, NodeProto, Paths
+from .network import Network, NodeProto, Paths, Point
 from .stream import PacketQueue as Stream
 from .go_back_n import Receiver, Sender
 from .high_transfer import UID, Action, Packet
@@ -154,6 +162,7 @@ def if_for_me(func):
         if packet.receiver_uid == UID("") or packet.receiver_uid == self.uid:
             func(self, packet, *a, **kw)
         else:
+            # packet = attrs.evolve(packet, from_uid=self.uid)
             self._relay(packet)
 
     return wrapper
@@ -162,14 +171,14 @@ def if_for_me(func):
 @attrs.frozen(order=True)
 class TransmitterNode(NodeProto):
     uid: UID
-    latency: float
+    pt: Point
 
     def __repr__(self):
         return f"{self.uid}"
 
     @staticmethod
     def dist(a: "TransmitterNode", b: "TransmitterNode") -> float:
-        return a.latency + b.latency
+        return math.hypot(*attrs.astuple(a.pt - b.pt))
 
 
 @attrs.define
@@ -186,7 +195,8 @@ class Storage:
             self.stored_data = self.stored_data[:~0]
             self._stored_iterator = batched(self.stored_data, self.batch_size)
             self.is_ready = True
-        print(f"{self.stored_data = }")
+        print(f"{self.stored_data = !r}")
+        print(f"{self.is_ready = }")
         # self._stored_iterator = batched("ABC\x00", self._batch_size)
 
     def give(self) -> str:
@@ -268,6 +278,7 @@ class Transmitter:
 
     @if_for_me
     def _store(self, packet: Packet):
+        print(f"Storing {packet = }")
         self.storage.store(packet.payload)
         # if packet.receiver_uid == self.uid:
         #     self.storage.store(packet.payload)
@@ -277,21 +288,28 @@ class Transmitter:
     def _relay(self, packet: Packet):
         peer_uid = packet.receiver_uid
         peer = self.peers.get(peer_uid, None)
+        got_from = packet.from_uid
+        packet = attrs.evolve(packet, from_uid=self.uid)
         if peer is None:
-            self._send_to_all_but_one(peer_uid, packet)
+            self._send_to_all_but_one(got_from, packet)
         else:
             self.send(peer_uid, packet)
 
     def _send_to_all_but_one(self, exclude_peer_uid: UID, packet: Packet):
+        print(
+            # f"Gotta send to all but {self.peers.keys() - exclude_peer_uid = } from {self.uid}"
+            f"Gotta send to {self.peers.keys() - exclude_peer_uid} from {self.uid}"
+        )
         for peer_uid in self.peers.keys() - exclude_peer_uid:
+            print(f"Sending (relaying) to {peer_uid = } form {self.uid}")
             self.send(peer_uid, packet)
 
     def _give(self, packet: Packet):
         if packet.receiver_uid == self.uid:
-            sender_uid = cast(UID, packet.payload[:4])
             if not self.storage.is_ready:
                 self._packet_queue.put(packet)
                 return
+            sender_uid = cast(UID, packet.payload[~3:])
             self._give_all(sender_uid)
             # print(f"{self.uid!r} for me, sending back to {sender_uid!r}")
             # packet = Packet(
@@ -302,7 +320,8 @@ class Transmitter:
             # self.send(sender_uid, packet)
         else:
             print(f"{self.uid!r} not for me, relaying")
-            packet = attrs.evolve(packet, payload=f"{self.uid}{packet.payload}")
+            packet = attrs.evolve(packet, from_uid=self.uid)
+            # packet = attrs.evolve(packet, payload=f"{self.uid}{packet.payload}")
             self._relay(packet)
 
     def _give_all(self, send_to_uid: UID):
@@ -310,10 +329,12 @@ class Transmitter:
         while (data := self.storage.give()) != EOS:
             packet = Packet(
                 Action.STORE,
-                send_to_uid,
-                data,
+                receiver_uid=send_to_uid,
+                from_uid=self.uid,
+                payload=data,
             )
-            self.send(send_to_uid, packet)
+            self._relay(packet)
+            # self.send(send_to_uid, packet)
             # time.sleep(1)
 
     @if_for_me
@@ -390,7 +411,7 @@ class Transmitter:
 def _unset_debug_logging_level():
     for logger in logging.getLogger().getChildren():
         # logger.setLevel(logging.INFO)
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logging.ERROR)
 
 
 def _add_connection(peer1_uid: UID, peer2_uid: UID):
@@ -416,10 +437,18 @@ def make_uids(num_uids: int):
 
 def make_tnodes(
     uids: Iterable[UID],
-    latencies: Iterable[float],
+    points: Iterable[Point],
 ) -> Mapping[UID, TransmitterNode]:
-    tnodes = starmap(TransmitterNode, zip(uids, latencies))
+    tnodes = starmap(TransmitterNode, zip(uids, points))
     return dict(zip(uids, tnodes))
+
+
+def get_unique_pairs(shortest_paths: Paths):
+    return {
+        (peer1, peer2)
+        for path in shortest_paths.values()
+        for peer1, peer2 in pairwise(path)
+    }
 
 
 def make_transmiters(
@@ -433,28 +462,46 @@ def make_transmiters(
             DesignatedStorage(batch_size=batch_size),
         )
     }
+    already_connected: set[tuple[NodeProto, NodeProto]] = set()
     for tnode, path in shortest_paths.items():
+        print(f"{tnode = }, {path = }")
         transmitters[tnode.uid] = Transmitter(tnode.uid, Storage(batch_size=batch_size))
         for peer1, peer2 in pairwise(path):
+            if (peer1, peer2) in already_connected:
+                continue
+            already_connected.add((peer1, peer2))
+            print((peer1, peer2))
             _add_connection(peer1.uid, peer2.uid)
 
+    print(f"{transmitters.keys() = }")
     return transmitters
 
 
 def befriend_peers(
-    shortest_paths: Paths,
+    unique_peer_pairs: set[tuple[NodeProto, NodeProto]],
     transmitters: Mapping[UID, Transmitter],
 ):
     # def befriend_peers(shortest_paths: Paths, conductor: Transmitter):
-    for tnode, paths in shortest_paths.items():
-        for peer1, peer2 in pairwise(paths):
-            pkt1 = Packet(Action.ADD, receiver_uid=peer2.uid, payload=f"{peer1.uid}")
-            pkt2 = Packet(Action.ADD, receiver_uid=peer1.uid, payload=f"{peer2.uid}")
-            # hack: originally, transmitter doesn't have anything "listening" on
-            # receiver ports, so we can't just ``conductor._packet_queue.put(pkt)``
-            transmitters[peer1.uid]._add_peer(pkt2)
-            transmitters[peer2.uid]._add_peer(pkt1)
-            # conductor.send(paths[1].uid, pkt2)
+    for peer1, peer2 in unique_peer_pairs:
+        pkt1 = Packet(
+            Action.ADD,
+            receiver_uid=peer2.uid,
+            from_uid=peer1.uid,
+            # can't remove payload here, because ``from_uid`` might change,
+            # thus making the wrong connection
+            payload=f"{peer1.uid}",
+        )
+        pkt2 = Packet(
+            Action.ADD,
+            receiver_uid=peer1.uid,
+            from_uid=peer2.uid,
+            payload=f"{peer2.uid}",
+        )
+        # hack: originally, transmitter doesn't have anything "listening" on
+        # receiver ports, so we can't just ``conductor._packet_queue.put(pkt)``
+        transmitters[peer1.uid]._add_peer(pkt2)
+        transmitters[peer2.uid]._add_peer(pkt1)
+        # conductor.send(paths[1].uid, pkt2)
 
 
 def make_data_distribution(
@@ -491,6 +538,7 @@ def distribute_data(
                 Packet(
                     Action.STORE,
                     receiver_uid=uid,
+                    from_uid=conductor.uid,
                     payload=data_to_store,
                 )
             )
@@ -499,6 +547,7 @@ def distribute_data(
             Packet(
                 Action.STORE,
                 receiver_uid=uid,
+                from_uid=conductor.uid,
                 payload=EOS,
             ),
         )
@@ -510,6 +559,7 @@ def assemble_data(conductor: Transmitter, uids: Iterable[UID]):
             Packet(
                 Action.GIVE,
                 receiver_uid=uid,
+                from_uid=conductor.uid,
                 payload=f"{conductor.uid}",
             )
         )
@@ -525,13 +575,19 @@ def wait_for_assemble_completion(conductor_storage: DesignatedStorage, n_batches
 
 
 def terminate_all(conductor: Transmitter, shortest_paths: Paths):
+    # hack: to not remove again
+    already_termed: set[UID] = set()
     for path in shortest_paths.values():
         # skip the 0th node, which is conductor
         for peer in reversed(path[1:]):
+            if peer.uid in already_termed:
+                continue
+            already_termed.add(peer.uid)
             conductor._packet_queue.put(
                 Packet(
                     Action.TERM,
                     receiver_uid=peer.uid,
+                    from_uid=conductor.uid,
                     payload="",
                 )
             )
@@ -540,36 +596,109 @@ def terminate_all(conductor: Transmitter, shortest_paths: Paths):
         Packet(
             Action.TERM,
             receiver_uid=conductor.uid,
+            from_uid=conductor.uid,
             payload="",
         )
     )
+
+
+def linear(n_pts: int = 5) -> MutableSequence[Point]:
+    return [Point(i, i) for i in range(n_pts)]
+
+
+def circular(
+    n_pts: int = 10,
+    r: float = 3,
+) -> MutableSequence[Point]:
+    return [
+        Point(
+            math.cos(2 * math.pi * i / n_pts) * r,
+            math.sin(2 * math.pi * i / n_pts) * r,
+        )
+        for i in range(n_pts)
+    ]
+
+
+def starlike(r: float = 3) -> MutableSequence[Point]:
+    return [Point(0, 0), *circular(n_pts=5, r=r)]
 
 
 if __name__ == "__main__":
     import uuid
 
     data = (Path(__file__).parent / "data.txt").read_text()
+    from string import printable, ascii_letters, digits
+
+    data = data
 
     _unset_debug_logging_level()
 
-    num_nodes = 3
+    simulation_type: Literal["c", "l1", "l2", "s"] = "c"
     batch_size = 10
-    # conductor idx in uids
-    c_idx = 0
 
-    uids = make_uids(num_uids=num_nodes)
-    latencies = [0.5, 0.3, 0.5]
-    latencies = [0.1, 0.1, 0.1]
-    tnodes = make_tnodes(uids, latencies)
-    net = Network.from_nodes(list(tnodes.values()), max_distance=0.8)
+    match simulation_type:
+        case "c":
+            num_nodes = 4
+            # conductor idx in uids
+            c_idx = 0
+
+            uids = make_uids(num_uids=num_nodes)
+            tnodes = make_tnodes(uids, circular(num_nodes))
+            for uid, tnode in tnodes.items():
+                print(f"{tnode.uid = }, {tnode.pt = }")
+            net = Network.from_nodes(list(tnodes.values()), max_distance=4.3)
+        case "l1":
+            num_nodes = 3
+            # conductor idx in uids
+            c_idx = 0
+
+            uids = make_uids(num_uids=num_nodes)
+            tnodes = make_tnodes(uids, linear(num_nodes))
+            for uid, tnode in tnodes.items():
+                print(f"{tnode.uid = }, {tnode.pt = }")
+            net = Network.from_nodes(list(tnodes.values()), max_distance=1.5)
+        case "l2":
+            num_nodes = 3
+            # conductor idx in uids
+            c_idx = 1
+
+            uids = make_uids(num_uids=num_nodes)
+            # latencies = [0.5, 0.3, 0.5]
+            # latencies = [0.1, 0.1, 0.1]
+            tnodes = make_tnodes(uids, linear(num_nodes))
+            for uid, tnode in tnodes.items():
+                print(f"{tnode.uid = }, {tnode.pt = }")
+            net = Network.from_nodes(list(tnodes.values()), max_distance=1.5)
+        case "s":
+            num_nodes = 4
+            # conductor idx in uids
+            c_idx = 0
+
+            uids = make_uids(num_uids=num_nodes - 1)
+            # latencies = [0.5, 0.3, 0.5]
+            # latencies = [0.1, 0.1, 0.1]
+            tnodes = make_tnodes(uids, circular(num_nodes - 1))
+            uids = [make_uid(), *uids]
+            print(tnodes)
+            tnodes[uids[0]] = TransmitterNode(uids[0], pt=Point(0, 0))
+            print(tnodes)
+            for uid, tnode in tnodes.items():
+                print(f"{tnode.uid = }, {tnode.pt = }")
+            net = Network.from_nodes(list(tnodes.values()), max_distance=3.1)
+    print(net)
+    # quit()
     # conductor
     c_uid = uids[c_idx]
+    # print(f"{c_uid = }")
     del uids[c_idx]
     shortest_paths = net.ospf(tnodes[c_uid])
     print(shortest_paths)
     print(shortest_paths[tnodes[c_uid]])
     del shortest_paths[tnodes[c_uid]]
+    unique_pairs = get_unique_pairs(shortest_paths)
     print(net)
+    print(shortest_paths)
+    # quit()
 
     distributed_data = make_data_distribution(data, uids, batch_size)
 
@@ -584,20 +713,35 @@ if __name__ == "__main__":
     print(transmitters)
     # quit()
 
+    start_time = time.monotonic()
     ths = [Thread(target=t.run) for t in transmitters.values()]
     for th in ths:
         th.start()
 
     befriend_peers(
-        shortest_paths=shortest_paths,
+        unique_peer_pairs=unique_pairs,
         transmitters=transmitters,
     )
+    print(f"{c_uid = }")
+    for tmitter in transmitters.values():
+        print(tmitter.uid, tmitter.peers.keys())
     distributed_data = make_data_distribution(
         data,
         uids,
         batch_size=batch_size,
     )
     distribute_data(distributed_data, conductor)
+    # while True:
+    #     time.sleep(5)
+    # while True:
+    #     print()
+    #     print(f"{transmitters[uids[~1]].storage.stored_data!r}")
+    #     print()
+    #     print(f"{transmitters[uids[~0]].storage.stored_data!r}")
+    #     print()
+    #     print()
+
+    #     time.sleep(5)
     assemble_data(conductor=conductor, uids=uids)
     wait_for_assemble_completion(
         conductor_storage=conductor.storage,
@@ -615,7 +759,10 @@ if __name__ == "__main__":
     assembled_data = conductor.storage.assemble()
     assert assembled_data == data, "".join(difflib.unified_diff(assembled_data, data))
     print(f"{assembled_data = }")
-
+    print()
+    print(
+        f"Time taken: {time.monotonic() - start_time:.3f} secs for {simulation_type = !r}"
+    )
     quit()
 
     p_uid, tp_uid = uids

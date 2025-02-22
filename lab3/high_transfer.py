@@ -31,6 +31,8 @@ class Packet:
     action: Action = attrs.field(converter=Action, repr=lambda v: v.value)
     # to whom this packet is for
     receiver_uid: UID
+    # from whom this packet is
+    from_uid: UID
     # other stuff
     payload: str
 
