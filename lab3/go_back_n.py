@@ -7,7 +7,7 @@ import attrs
 
 from .stream import EOT, PacketQueue, Packet as LPacket
 from .utils import get_logger
-from .storage import Packet
+from .high_transfer import Packet
 
 rlog = get_logger("r")
 slog = get_logger("s")
@@ -52,13 +52,13 @@ class Sender:
     If timed out, resend the message from `left_bound`.
     """
 
-    s_to_r_stream: PacketQueue
-    r_to_s_stream: PacketQueue
+    s_to_r_stream: PacketQueue = attrs.field(repr=lambda v: f"{id(v._queue):x}"[~4:])
+    r_to_s_stream: PacketQueue = attrs.field(repr=lambda v: f"{id(v._queue):x}"[~4:])
     message: Sequence[str] = [""]
     window_size: int = 10
     timeout: float = 1.0
     n_sent: int = attrs.field(init=False, default=0)
-    num_packets: int = attrs.field(init=False)
+    num_packets: int = attrs.field(init=False, default=0)
     should_terminate: bool = attrs.field(init=False, default=False)
     # bool state whether the message has been sent or not
     done: bool = attrs.field(init=False, default=True)
@@ -69,7 +69,7 @@ class Sender:
     def send_packet(self, high_packet: Packet):
         assert self.done
         # will have 100 chars in packet's payload
-        self.message = list(map("".join, batched(f"{high_packet}", 100)))
+        self.message = list(map("".join, batched(f"{high_packet}\x00", 100)))
         self.num_packets = len(self.message)
         self._update_stream_vars()
         self.done = False
@@ -119,9 +119,9 @@ class Sender:
                 last_send_time = time.monotonic()
 
             if self.last_send_time + self.timeout < time.monotonic():
-                slog.debug(
-                    f"Timed out, resending from {self.left_bound} ({self.message[self.left_bound : self.left_bound + 1]})"
-                )
+                # slog.debug(
+                #     f"Timed out, resending from {self.left_bound} ({self.message[self.left_bound : self.left_bound + 1]})"
+                # )
                 self.m_pos = self.left_bound
 
             if self.m_pos >= self.num_packets:
@@ -137,8 +137,8 @@ class Receiver:
     we're expecting, not the one we've successfully recieved
     """
 
-    s_to_r_stream: PacketQueue
-    r_to_s_stream: PacketQueue
+    s_to_r_stream: PacketQueue = attrs.field(repr=lambda v: f"{id(v._queue):x}"[~4:])
+    r_to_s_stream: PacketQueue = attrs.field(repr=lambda v: f"{id(v._queue):x}"[~4:])
     received_packets: Queue[Packet]
     window_size: int = 10
     n_recieved: int = attrs.field(init=False, default=0)
@@ -164,10 +164,12 @@ class Receiver:
                 n_right += 1
                 rlog.debug(f"Recieved {packet}")
                 self.received_payload += packet.payload
-                if self.received_payload.endswith(str(b"\0")):
+                if self.received_payload.endswith("\x00"):
+                    rlog.info("HERE")
                     self.received_packets.put(
                         Packet.from_string(self.received_payload[:~0])
                     )
+                    rlog.info(Packet.from_string(self.received_payload[:~0]))
                     self.received_payload = ""
                 rlog.debug(
                     f"Sent ACK {expected_seq_num} Request {(expected_seq_num + 1) % seq_mod}"

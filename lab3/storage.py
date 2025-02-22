@@ -3,20 +3,22 @@ import enum
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from functools import wraps
 from itertools import batched
+import logging
 from queue import Queue
 from threading import Thread
 from typing import ClassVar, Literal, NewType, Self, cast, override
 
 import attrs
 
-from .go_back_n import Receiver, Sender
 from .network import NodeProto
 from .stream import PacketQueue as Stream
+from .go_back_n import Receiver, Sender
+from .high_transfer import UID, Action, Packet
 
 # EOT = -1
 
 Addr = NewType("Addr", str)
-UID = NewType("UID", str)
+# UID = NewType("UID", str)
 SStream = NewType("SStream", Stream)
 RStream = NewType("RStream", Stream)
 
@@ -25,7 +27,7 @@ RStream = NewType("RStream", Stream)
 class AddressMapper:
     """A global addr-to-stream hub."""
 
-    address_to_stream: ClassVar[MutableMapping[Addr, Stream]]
+    address_to_stream: ClassVar[MutableMapping[Addr, Stream]] = {}
 
     @staticmethod
     def _create_ptp_addr(
@@ -59,48 +61,14 @@ class AddressMapper:
         only one stream.
         """
         s_to_r_addr, r_to_s_addr = AddressMapper._create_ptp_addrs(peer1_uid, peer2_uid)
-        cls.address_to_stream[s_to_r_addr] = SStream()
-        cls.address_to_stream[r_to_s_addr] = RStream()
+        cls.address_to_stream[s_to_r_addr] = Stream()
+        cls.address_to_stream[r_to_s_addr] = Stream()
 
     @classmethod
     def get(cls, t_uid: UID, p_uid: UID) -> tuple[SStream, RStream]:
         """Return streams for one-way connection from transmitter to peer."""
         ttp, ptt = AddressMapper._create_ptp_addrs(t_uid, p_uid)
         return cls.address_to_stream[ttp], cls.address_to_stream[ptt]
-
-
-class Action(enum.IntEnum):
-    # store given data
-    STORE = enum.auto()
-    # give stored data
-    GIVE = enum.auto()
-    # add peer
-    ADD = enum.auto()
-    # # do nothing, just relay
-    # RELAY = enum.auto()
-    # terminate transmitter
-    TERM = enum.auto()
-
-
-@attrs.frozen
-class Packet:
-    """A high-level packet.
-
-    So seq_num is not needed here, but is needed on a transmission level
-    """
-
-    # sequence num
-    # seq: int
-    # what to do with this packet
-    action: Action = attrs.field(converter=Action, repr=lambda v: v.value)
-    # to whom this packet is for
-    receiver_uid: UID
-    # other stuff
-    payload: str
-
-    @classmethod
-    def from_string(cls, string: str) -> Self:
-        return cast(Self, eval(string))
 
 
 @attrs.define
@@ -110,32 +78,57 @@ class Peer:
     # ttp stands for transmitter-to-peer
     # send stream, because transmitter is the main role,
     # so it sends to peer
-    ttp_stream: SStream
-    ptt_stream: RStream
-    sender: Sender
-    receiver: Receiver
+    real_ttp_stream: SStream
+    dummy_ttp_stream: SStream
+    real_ptt_stream: RStream
+    dummy_ptt_stream: RStream
+    real_sender: Sender = attrs.field(repr=lambda v: f"\n\n{v}\n\n")
+    dummy_receiver: Receiver = attrs.field(repr=lambda v: f"\n\n{v}\n\n")
+    dummy_sender: Sender = attrs.field(repr=lambda v: f"\n\n{v}\n\n")
+    real_receiver: Receiver = attrs.field(repr=lambda v: f"\n\n{v}\n\n")
     ths: Iterable[Thread] = attrs.field(init=False)
 
     @classmethod
     def from_payload(cls, t_uid: UID, payload: str, received_packets: Queue[Packet]):
         p_uid = cast(UID, payload[:4])
-        ttp_stream, ptt_stream = AddressMapper.get(t_uid, p_uid)
-        sender = Sender(ttp_stream, ptt_stream)
-        receiver = Receiver(ttp_stream, ptt_stream, received_packets)
-        return cls(p_uid, ttp_stream, ptt_stream, sender, receiver)
+        real_ttp_stream, dummy_ptt_stream = AddressMapper.get(t_uid, p_uid)
+        dummy_ttp_stream, real_ptt_stream = AddressMapper.get(p_uid, t_uid)
+        # sends real packets from T to P, receives ACKS, therefore dummy receiver
+        real_sender = Sender(real_ttp_stream, dummy_ptt_stream)
+        dummy_receiver = Receiver(real_ttp_stream, dummy_ptt_stream, Queue())
+
+        # sends ACKS, receiver real packets from P to T, therefore dummy sender
+        dummy_sender = Sender(dummy_ttp_stream, real_ptt_stream)
+        real_receiver = Receiver(dummy_ttp_stream, real_ptt_stream, received_packets)
+        return cls(
+            p_uid,
+            real_ttp_stream=real_ttp_stream,
+            dummy_ttp_stream=dummy_ttp_stream,
+            real_ptt_stream=real_ptt_stream,
+            dummy_ptt_stream=dummy_ptt_stream,
+            real_sender=real_sender,
+            dummy_receiver=dummy_receiver,
+            dummy_sender=dummy_sender,
+            real_receiver=real_receiver,
+        )
 
     def start(self):
-        self.ths = [Thread(target=self.sender.run), Thread(target=self.receiver.run)]
+        self.ths = [
+            Thread(target=self.real_sender.run),
+            Thread(target=self.dummy_receiver.run),
+            Thread(target=self.dummy_sender.run),
+            Thread(target=self.real_receiver.run),
+        ]
         for th in self.ths:
             th.start()
 
     def terminate(self):
-        self.sender.send_termination_packet()
+        self.real_sender.send_termination_packet()
         for th in self.ths:
             th.join()
 
     def send_packet(self, packet: Packet):
-        self.sender.send_packet(packet)
+        self.real_sender.send_packet(packet)
 
     # def get_packet(self) -> Packet | None:
     #     if not self.received_packets.empty():
@@ -144,8 +137,8 @@ class Peer:
 
 
 def if_for_me(func):
-    @wraps
-    def wrapper(self: Transmitter, packet: Packet, *a, **kw):
+    # @wraps
+    def wrapper(self: "Transmitter", packet: Packet, *a, **kw):
         if packet.receiver_uid == self.uid:
             func(self, packet, *a, **kw)
         else:
@@ -167,10 +160,10 @@ class TransmitterNode:
 @attrs.define
 class Transmitter:
     uid: UID
-    peers: MutableMapping[UID, Peer]
     storage: "Storage"
+    peers: MutableMapping[UID, Peer] = attrs.field(init=False, factory=dict)
     _should_terminate: bool = attrs.field(init=False, default=False)
-    _packet_queue: Queue[Packet] = attrs.field(factory=Queue)
+    _packet_queue: Queue[Packet] = attrs.field(init=False, factory=Queue)
 
     def run(self):
         while not self._should_terminate:
@@ -243,7 +236,7 @@ class Transmitter:
             packet = attrs.evolve(packet, payload=f"{self.uid}{packet.payload}")
             self._relay(packet)
 
-    @if_for_me
+    # @if_for_me
     def _add_peer(self, packet: Packet):
         # if packet.receiver_uid == self.uid:
         peer = Peer.from_payload(self.uid, packet.payload, self._packet_queue)
@@ -276,8 +269,8 @@ EOS = str(b"\0")
 
 @attrs.define
 class Storage:
-    stored_data: str = attrs.field(init=False)
-    _stored_iterator: batched[str] = attrs.field(init=False)
+    stored_data: str = attrs.field(init=False, default="")
+    _stored_iterator: Iterator[str] = attrs.field(init=False)
     _batch_size: int = attrs.field(init=False, default=10)
 
     def store(self, data: str) -> None:
@@ -285,6 +278,7 @@ class Storage:
         self.stored_data += data
         if self.stored_data.endswith(EOS):
             self._stored_iterator = batched(self.stored_data, self._batch_size)
+        print(f"{self.stored_data = }")
 
     def give(self) -> str:
         try:
@@ -332,3 +326,45 @@ class Storage:
 #             return next(self._storage_iterator)
 #         except StopIteration:
 #             return EOT
+
+
+def _unset_debug_logging_level():
+    for logger in logging.getLogger().getChildren():
+        # logger.setLevel(logging.INFO)
+        logger.setLevel(logging.INFO)
+
+
+if __name__ == "__main__":
+    import uuid
+
+    _unset_debug_logging_level()
+
+    make_uid = lambda: cast(UID, f"{uuid.uuid4()}".split("-")[1])
+    t_uid = make_uid()
+    p_uid = make_uid()
+
+    s1 = Storage()
+    t = Transmitter(t_uid, s1)
+    s2 = Storage()
+    t2 = Transmitter(p_uid, s2)
+
+    AddressMapper.add_streams(t_uid, p_uid)
+    AddressMapper.add_streams(p_uid, t_uid)
+
+    pkt = Packet(Action.ADD, receiver_uid=t_uid, payload=f"{p_uid}")
+    pkt2 = Packet(Action.ADD, receiver_uid=p_uid, payload=f"{t_uid}")
+    t._add_peer(pkt)
+    t2._add_peer(pkt2)
+
+    th = Thread(target=t2.run)
+    th.start()
+    t.send(p_uid, Packet(Action.STORE, p_uid, "Yo!"))
+
+    from pprint import pprint
+
+    pprint(t.peers)
+    print()
+    pprint(t2)
+
+    print()
+    pprint(AddressMapper.address_to_stream)

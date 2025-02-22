@@ -22,14 +22,15 @@ plog = get_logger("p")
 
 @attrs.define
 class PacketQueue:
-    loss_probability: float = 0.3
-    latency: float = 0.1  # in sec
+    loss_probability: float = 0.0
+    latency: float = 0.0  # in sec
     _queue: queue.Queue[Packet] = attrs.field(
         init=False,
         factory=queue.Queue,
         alias="_queue",
+        repr=lambda v: f"{id(v):x}"[~4:],
     )
-    _rng: random.Random = attrs.field(init=False, alias="_rng")
+    _rng: random.Random = attrs.field(init=False, alias="_rng", repr=False)
 
     def __attrs_post_init__(self):
         self._rng = random.Random(42)
