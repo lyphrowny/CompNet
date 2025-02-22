@@ -4,7 +4,7 @@ import difflib
 import enum
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from functools import wraps
-from itertools import batched
+from itertools import batched, starmap
 import logging
 from pathlib import Path
 from queue import Queue
@@ -15,7 +15,7 @@ from typing import ClassVar, Literal, NewType, Self, Sequence, cast, override
 
 import attrs
 
-from .network import NodeProto
+from .network import Network, NodeProto
 from .stream import PacketQueue as Stream
 from .go_back_n import Receiver, Sender
 from .high_transfer import UID, Action, Packet
@@ -159,10 +159,13 @@ def if_for_me(func):
     return wrapper
 
 
-@attrs.frozen
+@attrs.frozen(order=True)
 class TransmitterNode:
     uid: UID
     latency: float
+
+    def __repr__(self):
+        return f"{self.uid}"
 
     @staticmethod
     def dist(a: "TransmitterNode", b: "TransmitterNode") -> float:
@@ -403,6 +406,16 @@ if __name__ == "__main__":
     t_uid = make_uid()
     p_uid = make_uid()
     tp_uid = make_uid()
+
+    tnodes = dict(
+        zip(
+            (t_uid, p_uid, tp_uid),
+            starmap(TransmitterNode, zip((t_uid, p_uid, tp_uid), (0.1, 0.1, 0.1))),
+        )
+    )
+    net = Network.from_nodes(tnodes.values(), max_distance=0.2)
+    print(net.ospf(tnodes[t_uid]))
+    quit()
 
     t = Transmitter(t_uid, DesignatedStorage())
     t2 = Transmitter(p_uid)
